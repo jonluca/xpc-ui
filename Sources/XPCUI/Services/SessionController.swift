@@ -290,10 +290,16 @@ struct TraceSession: Sendable {
         let directoryURL = URL(fileURLWithPath: "/tmp", isDirectory: true)
             .appendingPathComponent("XPCUI-\(UUID().uuidString)", isDirectory: true)
         let blobsURL = directoryURL.appendingPathComponent("blobs", isDirectory: true)
+        let privateDirectoryAttributes: [FileAttributeKey: Any] = [.posixPermissions: 0o700]
+        try FileManager.default.createDirectory(
+            at: directoryURL,
+            withIntermediateDirectories: false,
+            attributes: privateDirectoryAttributes
+        )
         try FileManager.default.createDirectory(
             at: blobsURL,
-            withIntermediateDirectories: true,
-            attributes: [.posixPermissions: 0o700]
+            withIntermediateDirectories: false,
+            attributes: privateDirectoryAttributes
         )
         return TraceSession(
             id: UUID().uuidString,

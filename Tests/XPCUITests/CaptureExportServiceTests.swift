@@ -3,6 +3,22 @@ import XCTest
 @testable import XPC_UI
 
 final class CaptureExportServiceTests: XCTestCase {
+    func testTraceSessionUsesPrivateDirectoryPermissions() throws {
+        let session = try TraceSession.create()
+        defer { try? FileManager.default.removeItem(at: session.directoryURL) }
+
+        let manager = FileManager.default
+        let sessionMode = try XCTUnwrap(
+            manager.attributesOfItem(atPath: session.directoryURL.path)[.posixPermissions] as? NSNumber
+        )
+        let blobsMode = try XCTUnwrap(
+            manager.attributesOfItem(atPath: session.blobsURL.path)[.posixPermissions] as? NSNumber
+        )
+
+        XCTAssertEqual(sessionMode.intValue & 0o777, 0o700)
+        XCTAssertEqual(blobsMode.intValue & 0o777, 0o700)
+    }
+
     func testExportWritesReopenableBundle() throws {
         let session = try TraceSession.create()
         let export = FileManager.default.temporaryDirectory
