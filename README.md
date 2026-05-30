@@ -59,7 +59,8 @@ launching the target.
   port rights, and refresh-to-refresh deltas when the target permits inspection.
   Observed XPC services stay separate from opaque process-local Mach names.
 - `Privileged helper`: a valid same-team signed-client LaunchDaemon snapshot
-  RPC, registered from **Lab Setup** with admin approval.
+  RPC, registered from **Lab Setup** with admin approval. ServiceManagement
+  registration requires a signed, notarized app bundle.
 - `Endpoint Security`: an embedded, entitlement-gated system extension for
   process lifecycle, file open/close, UNIX-domain socket connects, and named
   XPC service connects. **Lab Setup** exposes explicit activation and Full Disk

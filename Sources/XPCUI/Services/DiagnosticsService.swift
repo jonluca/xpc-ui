@@ -3,12 +3,15 @@ import ServiceManagement
 
 @MainActor
 final class DiagnosticsService: ObservableObject {
+    private static let helperPlistName = "com.jonluca.xpcui.capture-helper.plist"
+
     @Published private(set) var capabilities: [CapabilityStatus] = []
     @Published private(set) var isRefreshing = false
 
     func refresh() {
         isRefreshing = true
-        let helperStatus = SMAppService.daemon(plistName: "com.jonluca.xpcui.capture-helper.plist").status
+        let helperStatus = SMAppService.daemon(plistName: Self.helperPlistName).status
+        let helperPlistAvailable = Self.bundledHelperPlistAvailable
         let traceLibraryAvailable = Bundle.main.url(forResource: "XPCTrace", withExtension: "dylib") != nil
         Task {
             let sipOutput = await Task.detached(priority: .utility) {
@@ -27,8 +30,8 @@ final class DiagnosticsService: ObservableObject {
                 CapabilityStatus(
                     id: "helper",
                     title: "Privileged capture helper",
-                    level: Self.level(for: helperStatus),
-                    detail: Self.detail(for: helperStatus)
+                    level: Self.helperLevel(for: helperStatus, bundledPlistAvailable: helperPlistAvailable),
+                    detail: Self.helperDetail(for: helperStatus, bundledPlistAvailable: helperPlistAvailable)
                 ),
                 CapabilityStatus(
                     id: "nsxpc-lifecycle",
@@ -74,7 +77,7 @@ final class DiagnosticsService: ObservableObject {
     }
 
     func registerHelper() throws {
-        try SMAppService.daemon(plistName: "com.jonluca.xpcui.capture-helper.plist").register()
+        try SMAppService.daemon(plistName: Self.helperPlistName).register()
         refresh()
     }
 
@@ -94,22 +97,37 @@ final class DiagnosticsService: ObservableObject {
         }
     }
 
-    private static func level(for status: SMAppService.Status) -> CapabilityStatus.Level {
+    static func helperLevel(
+        for status: SMAppService.Status,
+        bundledPlistAvailable: Bool
+    ) -> CapabilityStatus.Level {
         switch status {
         case .enabled: .available
         case .requiresApproval: .limited
-        case .notRegistered, .notFound: .unavailable
+        case .notRegistered: bundledPlistAvailable ? .limited : .unavailable
+        case .notFound: bundledPlistAvailable ? .limited : .unavailable
         @unknown default: .limited
         }
     }
 
-    private static func detail(for status: SMAppService.Status) -> String {
+    static func helperDetail(for status: SMAppService.Status, bundledPlistAvailable: Bool) -> String {
         switch status {
         case .enabled: "The LaunchDaemon is registered and enabled."
         case .requiresApproval: "Registration requires approval in System Settings."
-        case .notRegistered: "The bundled LaunchDaemon is not registered."
-        case .notFound: "The bundled LaunchDaemon plist was not found."
+        case .notRegistered where bundledPlistAvailable: "The bundled LaunchDaemon is not registered."
+        case .notFound where bundledPlistAvailable:
+            "The LaunchDaemon plist is bundled, but ServiceManagement cannot discover it from this build. Registration requires a signed, notarized app bundle."
+        case .notRegistered, .notFound: "The bundled LaunchDaemon plist was not found."
         @unknown default: "The helper reported an unknown registration state."
         }
+    }
+
+    private static var bundledHelperPlistAvailable: Bool {
+        FileManager.default.fileExists(
+            atPath: Bundle.main.bundleURL
+                .appendingPathComponent("Contents/Library/LaunchDaemons")
+                .appendingPathComponent(helperPlistName)
+                .path
+        )
     }
 }
