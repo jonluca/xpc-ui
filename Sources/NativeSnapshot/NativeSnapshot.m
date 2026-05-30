@@ -4,6 +4,7 @@
 #import <arpa/inet.h>
 #import <libproc.h>
 #import <mach/mach.h>
+#import <mach_debug/ipc_info.h>
 #import <netinet/in.h>
 #import <sys/proc_info.h>
 #import <sys/socket.h>
@@ -105,7 +106,46 @@ static NSArray *XPCUIOpenFiles(pid_t pid, NSMutableArray *sockets) {
     return files;
 }
 
-static NSArray *XPCUIMachPorts(pid_t pid, NSString **error) {
+static NSDictionary *XPCUIMachPortSpaceInfo(mach_port_t task, NSDictionary **referencesByName) {
+    ipc_info_space_t spaceInfo = {0};
+    ipc_info_name_array_t tableInfo = NULL;
+    ipc_info_tree_name_array_t treeInfo = NULL;
+    mach_msg_type_number_t tableCount = 0;
+    mach_msg_type_number_t treeCount = 0;
+    kern_return_t result = mach_port_space_info(
+        task,
+        &spaceInfo,
+        &tableInfo,
+        &tableCount,
+        &treeInfo,
+        &treeCount
+    );
+    if (result != KERN_SUCCESS) {
+        return nil;
+    }
+    NSMutableDictionary *references = [NSMutableDictionary dictionary];
+    for (mach_msg_type_number_t index = 0; index < tableCount; index++) {
+        ipc_info_name_t info = tableInfo[index];
+        if (info.iin_type != MACH_PORT_TYPE_NONE) {
+            references[@(info.iin_name)] = @(info.iin_urefs);
+        }
+    }
+    if (tableInfo) {
+        vm_deallocate(mach_task_self(), (vm_address_t)tableInfo, tableCount * sizeof(ipc_info_name_t));
+    }
+    if (treeInfo) {
+        vm_deallocate(mach_task_self(), (vm_address_t)treeInfo, treeCount * sizeof(ipc_info_tree_name_t));
+    }
+    *referencesByName = references;
+    return @{
+        @"generationMask": @(spaceInfo.iis_genno_mask),
+        @"tableSize": @(spaceInfo.iis_table_size),
+        @"tableEntryCount": @(tableCount),
+        @"treeEntryCount": @(treeCount),
+    };
+}
+
+static NSArray *XPCUIMachPorts(pid_t pid, NSDictionary **spaceInfo, NSString **error) {
     mach_port_t task = MACH_PORT_NULL;
     kern_return_t taskResult = task_for_pid(mach_task_self(), pid, &task);
     if (taskResult != KERN_SUCCESS) {
@@ -117,15 +157,23 @@ static NSArray *XPCUIMachPorts(pid_t pid, NSString **error) {
     mach_msg_type_number_t nameCount = 0;
     mach_msg_type_number_t typeCount = 0;
     kern_return_t result = mach_port_names(task, &names, &nameCount, &types, &typeCount);
-    mach_port_deallocate(mach_task_self(), task);
     if (result != KERN_SUCCESS) {
+        mach_port_deallocate(mach_task_self(), task);
         *error = [NSString stringWithFormat:@"Unable to enumerate Mach ports: %s", mach_error_string(result)];
         return @[];
     }
+    NSDictionary *referencesByName = @{};
+    *spaceInfo = XPCUIMachPortSpaceInfo(task, &referencesByName);
+    mach_port_deallocate(mach_task_self(), task);
     NSMutableArray *ports = [NSMutableArray arrayWithCapacity:nameCount];
     mach_msg_type_number_t count = MIN(nameCount, typeCount);
     for (mach_msg_type_number_t index = 0; index < count; index++) {
-        [ports addObject:@{@"name": @(names[index]), @"typeBits": @(types[index])}];
+        NSNumber *name = @(names[index]);
+        NSMutableDictionary *port = [@{@"name": name, @"typeBits": @(types[index])} mutableCopy];
+        if (referencesByName[name]) {
+            port[@"userReferences"] = referencesByName[name];
+        }
+        [ports addObject:port];
     }
     vm_deallocate(mach_task_self(), (vm_address_t)names, nameCount * sizeof(mach_port_name_t));
     vm_deallocate(mach_task_self(), (vm_address_t)types, typeCount * sizeof(mach_port_type_t));
@@ -137,7 +185,8 @@ char *XPCUICopyProcessSnapshotJSON(pid_t pid) {
         NSMutableArray *sockets = [NSMutableArray array];
         NSArray *files = XPCUIOpenFiles(pid, sockets);
         NSString *error = nil;
-        NSArray *machPorts = XPCUIMachPorts(pid, &error);
+        NSDictionary *machPortSpace = nil;
+        NSArray *machPorts = XPCUIMachPorts(pid, &machPortSpace, &error);
         NSMutableDictionary *snapshot = [@{
             @"pid": @(pid),
             @"files": files,
@@ -146,6 +195,9 @@ char *XPCUICopyProcessSnapshotJSON(pid_t pid) {
         } mutableCopy];
         if (error) {
             snapshot[@"error"] = error;
+        }
+        if (machPortSpace) {
+            snapshot[@"machPortSpace"] = machPortSpace;
         }
         return XPCUICopyJSONString(snapshot);
     }

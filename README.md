@@ -36,8 +36,9 @@ launching the target.
   their environment to propagate. Resource snapshots follow the live descendant
   tree, and opt-in kernel deep mode updates its DTrace PID filters as children
   appear or exit.
-- `Process snapshots`: files, folders, sockets, and Mach port rights when the
-  target permits inspection.
+- `Process snapshots`: files, folders, sockets, Mach namespace capacity, decoded
+  port rights, and refresh-to-refresh deltas when the target permits inspection.
+  Observed XPC services stay separate from opaque process-local Mach names.
 - `Privileged helper`: a signed-client-validated LaunchDaemon snapshot RPC,
   registered from **Lab Setup** with admin approval.
 - `Endpoint Security`: an explicit gated adapter until Apple's restricted

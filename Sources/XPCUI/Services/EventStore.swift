@@ -17,6 +17,8 @@ final class EventStore: ObservableObject {
     @Published private(set) var appDroppedEventCount: UInt64 = 0
     @Published private(set) var tracerDroppedEventCount: UInt64 = 0
     @Published private(set) var snapshot: ProcessTreeSnapshot?
+    @Published private(set) var resourceDeltas: [Int32: ProcessResourceDelta] = [:]
+    @Published private(set) var xpcServicesByPID: [Int32: Set<String>] = [:]
     @Published private(set) var categories = ["all"]
 
     let sessionController: SessionController
@@ -69,6 +71,8 @@ final class EventStore: ObservableObject {
         appDroppedEventCount = 0
         tracerDroppedEventCount = 0
         snapshot = nil
+        resourceDeltas.removeAll(keepingCapacity: true)
+        xpcServicesByPID.removeAll(keepingCapacity: true)
         categorySet.removeAll(keepingCapacity: true)
         categories = ["all"]
         collectorDropCounts.removeAll(keepingCapacity: true)
@@ -98,6 +102,13 @@ final class EventStore: ObservableObject {
     }
 
     func update(snapshot: ProcessTreeSnapshot) {
+        let previousByPID = Dictionary(uniqueKeysWithValues: self.snapshot?.processes.map { ($0.pid, $0) } ?? [])
+        resourceDeltas = Dictionary(
+            uniqueKeysWithValues: snapshot.processes.compactMap { process in
+                guard let previous = previousByPID[process.pid] else { return nil }
+                return (process.pid, ProcessResourceDelta.between(previous: previous, current: process))
+            }
+        )
         self.snapshot = snapshot
     }
 
@@ -111,6 +122,11 @@ final class EventStore: ObservableObject {
         categorySet.formUnion(batch.events.map(\.category))
         if categorySet.count != previousCategories {
             categories = ["all"] + categorySet.sorted()
+        }
+        for event in batch.events where event.category == "xpc" {
+            if let serviceName = event.serviceName, !serviceName.isEmpty {
+                xpcServicesByPID[event.pid, default: []].insert(serviceName)
+            }
         }
         for event in batch.events where event.droppedEventCount > 0 {
             let collector = CollectorID(source: event.source, pid: event.pid)

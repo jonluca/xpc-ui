@@ -44,7 +44,8 @@ final class CaptureExportServiceTests: XCTestCase {
                         error: nil,
                         files: [],
                         sockets: [],
-                        machPorts: []
+                        machPorts: [],
+                        machPortSpace: nil
                     ),
                     ProcessSnapshot(
                         pid: 4,
@@ -54,7 +55,8 @@ final class CaptureExportServiceTests: XCTestCase {
                         error: nil,
                         files: [],
                         sockets: [],
-                        machPorts: []
+                        machPorts: [],
+                        machPortSpace: nil
                     ),
                 ]
             ),

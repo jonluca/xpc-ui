@@ -20,7 +20,11 @@ struct ContentView: View {
             case .timeline:
                 TimelineScreen(store: store)
             case .resources:
-                ResourcesView(snapshot: store.snapshot)
+                ResourcesView(
+                    snapshot: store.snapshot,
+                    deltas: store.resourceDeltas,
+                    xpcServicesByPID: store.xpcServicesByPID
+                )
             case .setup:
                 SetupView()
             }
