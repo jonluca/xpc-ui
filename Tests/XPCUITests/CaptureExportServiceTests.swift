@@ -27,24 +27,7 @@ final class CaptureExportServiceTests: XCTestCase {
             try? FileManager.default.removeItem(at: session.directoryURL)
             try? FileManager.default.removeItem(at: export)
         }
-        let event = CaptureEventEnvelope(
-            schemaVersion: CaptureEventEnvelope.currentSchemaVersion,
-            sessionID: session.id,
-            sequence: 1,
-            monotonicTimestamp: 2,
-            pid: 3,
-            parentPID: 1,
-            threadID: 4,
-            source: "test",
-            category: "xpc",
-            direction: "outgoing",
-            operation: "send",
-            serviceName: "com.example.service",
-            summary: "send",
-            payload: .object(["message": .string("hello")]),
-            diagnostics: [],
-            droppedEventCount: 0
-        )
+        let event = makeEvent(sessionID: session.id, sequence: 1)
 
         try CaptureExportService.write(
             session: session,
@@ -80,6 +63,7 @@ final class CaptureExportServiceTests: XCTestCase {
             dropCounters: CaptureExportService.DropCounters(
                 total: 9,
                 uiBuffer: 2,
+                journal: 0,
                 collectors: [
                     CaptureExportService.CollectorDropCounter(
                         source: "xpc-trace",
@@ -109,6 +93,7 @@ final class CaptureExportServiceTests: XCTestCase {
         XCTAssertTrue(manifest.includesFullFidelityPayloads)
         XCTAssertEqual(manifest.dropCounters?.total, 9)
         XCTAssertEqual(manifest.dropCounters?.uiBuffer, 2)
+        XCTAssertEqual(manifest.dropCounters?.journal, 0)
         XCTAssertEqual(manifest.dropCounters?.collectors.first?.droppedEventCount, 7)
         XCTAssertEqual(manifest.capabilityResults?.first?.id, "injection")
 
@@ -151,5 +136,75 @@ final class CaptureExportServiceTests: XCTestCase {
 
         XCTAssertNil(decoded.capabilityResults)
         XCTAssertNil(decoded.dropCounters)
+    }
+
+    func testExportUsesCompletePrivateJournalInsteadOfRetainedWindow() throws {
+        let session = try TraceSession.create()
+        let export = FileManager.default.temporaryDirectory
+            .appendingPathComponent("\(UUID().uuidString).xpcapture")
+        let journal = EventJournal()
+        defer {
+            journal.reset()
+            try? FileManager.default.removeItem(at: session.directoryURL)
+            try? FileManager.default.removeItem(at: export)
+        }
+        try journal.configure(directoryURL: session.directoryURL)
+        journal.append(makeEvent(sessionID: session.id, sequence: 1))
+        journal.append(makeEvent(sessionID: session.id, sequence: 2))
+
+        try CaptureExportService.write(
+            session: session,
+            events: [makeEvent(sessionID: session.id, sequence: 2)],
+            eventJournal: journal,
+            snapshot: nil,
+            droppedEventCount: 0,
+            targetPID: 3,
+            targetPath: "/tmp/example",
+            to: export
+        )
+
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let manifest = try decoder.decode(
+            CaptureExportService.Manifest.self,
+            from: Data(contentsOf: export.appendingPathComponent("manifest.json"))
+        )
+        let lines = try String(
+            contentsOf: export.appendingPathComponent("events.ndjson"),
+            encoding: .utf8
+        ).split(separator: "\n")
+        let exportedEvents = try lines.map {
+            try JSONDecoder().decode(CaptureEventEnvelope.self, from: Data($0.utf8))
+        }
+        let journalMode = try XCTUnwrap(
+            FileManager.default.attributesOfItem(
+                atPath: session.directoryURL.appendingPathComponent("events.ndjson").path
+            )[.posixPermissions] as? NSNumber
+        )
+
+        XCTAssertEqual(manifest.eventCount, 2)
+        XCTAssertEqual(exportedEvents.map(\.sequence), [1, 2])
+        XCTAssertEqual(journalMode.intValue & 0o777, 0o600)
+    }
+
+    private func makeEvent(sessionID: String, sequence: UInt64) -> CaptureEventEnvelope {
+        CaptureEventEnvelope(
+            schemaVersion: CaptureEventEnvelope.currentSchemaVersion,
+            sessionID: sessionID,
+            sequence: sequence,
+            monotonicTimestamp: 2,
+            pid: 3,
+            parentPID: 1,
+            threadID: 4,
+            source: "test",
+            category: "xpc",
+            direction: "outgoing",
+            operation: "send",
+            serviceName: "com.example.service",
+            summary: "send",
+            payload: .object(["message": .string("hello")]),
+            diagnostics: [],
+            droppedEventCount: 0
+        )
     }
 }

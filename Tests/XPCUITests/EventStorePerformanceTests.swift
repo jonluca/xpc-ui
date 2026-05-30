@@ -2,6 +2,27 @@ import XCTest
 @testable import XPC_UI
 
 final class EventStorePerformanceTests: XCTestCase {
+    func testEventJournalBurstRemainsBoundedAndAccountsForDrops() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let export = directory.appendingPathComponent("export.ndjson")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let journal = EventJournal(maxPendingCount: 8)
+        try journal.configure(directoryURL: directory)
+        defer { journal.reset() }
+        let event = syntheticEvent()
+        let submittedEventCount = 10_000
+
+        for _ in 0 ..< submittedEventCount {
+            journal.append(event)
+        }
+        let result = try journal.copyEvents(to: export)
+
+        XCTAssertEqual(UInt64(result.eventCount) + result.droppedEventCount, UInt64(submittedEventCount))
+        XCTAssertLessThanOrEqual(result.maximumBufferedEventCount, 8)
+    }
+
     func testPendingQueueRemainsBoundedAtSixtySecondSyntheticRate() {
         let queue = PendingEvents(maxCount: 100_000)
         let event = syntheticEvent()

@@ -26,6 +26,7 @@ final class EventStore: ObservableObject {
     @Published var paused = false
     @Published private(set) var droppedEventCount: UInt64 = 0
     @Published private(set) var appDroppedEventCount: UInt64 = 0
+    @Published private(set) var journalDroppedEventCount: UInt64 = 0
     @Published private(set) var tracerDroppedEventCount: UInt64 = 0
     @Published private(set) var snapshot: ProcessTreeSnapshot?
     @Published private(set) var resourceDeltas: [Int32: ProcessResourceDelta] = [:]
@@ -38,6 +39,7 @@ final class EventStore: ObservableObject {
 
     private let pending = PendingEvents()
     private nonisolated let blobStore = BlobStore()
+    private nonisolated let eventJournal = EventJournal()
     private var drainTimer: Timer?
     private let decoder = JSONDecoder()
     private let maxRetainedEvents = 200_000
@@ -66,6 +68,7 @@ final class EventStore: ObservableObject {
         do {
             var event = try JSONDecoder().decode(CaptureEventEnvelope.self, from: frame)
             event.payload = blobStore.externalize(event.payload)
+            eventJournal.append(event)
             pending.append(event)
         } catch {
             pending.incrementDecodeFailures()
@@ -81,6 +84,7 @@ final class EventStore: ObservableObject {
         selectedEventID = nil
         droppedEventCount = 0
         appDroppedEventCount = 0
+        journalDroppedEventCount = 0
         tracerDroppedEventCount = 0
         snapshot = nil
         resourceDeltas.removeAll(keepingCapacity: true)
@@ -94,11 +98,13 @@ final class EventStore: ObservableObject {
         launchTargetPID = nil
         selectedProcessID = nil
         pending.reset()
+        eventJournal.reset()
     }
 
-    func begin(session: TraceSession) {
+    func begin(session: TraceSession) throws {
         reset()
         blobStore.configure(blobsURL: session.blobsURL)
+        try eventJournal.configure(directoryURL: session.directoryURL)
     }
 
     func export(to destination: URL) throws {
@@ -110,6 +116,7 @@ final class EventStore: ObservableObject {
         try CaptureExportService.write(
             session: session,
             events: events,
+            eventJournal: eventJournal,
             snapshot: snapshot,
             droppedEventCount: droppedEventCount,
             dropCounters: exportDropCounters,
@@ -177,8 +184,9 @@ final class EventStore: ObservableObject {
             )
         }
         appDroppedEventCount += batch.decodeFailures + batch.overflowDrops
+        journalDroppedEventCount = eventJournal.droppedEventCount
         tracerDroppedEventCount = collectorDropCounts.values.reduce(0, +)
-        droppedEventCount = appDroppedEventCount + tracerDroppedEventCount
+        droppedEventCount = appDroppedEventCount + journalDroppedEventCount + tracerDroppedEventCount
         if events.count > maxRetainedEvents {
             let removalCount = events.count - retainedEventsAfterTrim
             let removedIDs = Set(events.prefix(removalCount).map(\.id))
@@ -225,6 +233,7 @@ final class EventStore: ObservableObject {
         CaptureExportService.DropCounters(
             total: droppedEventCount,
             uiBuffer: appDroppedEventCount,
+            journal: journalDroppedEventCount,
             collectors: collectorDropCounts
                 .map {
                     CaptureExportService.CollectorDropCounter(

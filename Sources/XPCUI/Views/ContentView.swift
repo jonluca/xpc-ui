@@ -86,6 +86,11 @@ private struct SidebarStatus: View {
                         .font(.caption2)
                         .foregroundStyle(.orange)
                 }
+                if store.journalDroppedEventCount > 0 {
+                    Text("\(store.journalDroppedEventCount.formatted()) dropped by session journal")
+                        .font(.caption2)
+                        .foregroundStyle(.orange)
+                }
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)

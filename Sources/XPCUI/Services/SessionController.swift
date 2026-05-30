@@ -69,7 +69,7 @@ final class SessionController: ObservableObject {
             try? FileManager.default.removeItem(at: session.directoryURL)
         }
         let nextSession = try TraceSession.create()
-        store?.begin(session: nextSession)
+        try store?.begin(session: nextSession)
         try socketServer.start(session: nextSession) { [weak store] frame in
             store?.ingest(frame: frame)
         }

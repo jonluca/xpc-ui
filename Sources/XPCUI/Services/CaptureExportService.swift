@@ -17,6 +17,7 @@ enum CaptureExportService {
     struct DropCounters: Codable, Equatable, Sendable {
         let total: UInt64
         let uiBuffer: UInt64
+        let journal: UInt64?
         let collectors: [CollectorDropCounter]
     }
 
@@ -37,6 +38,7 @@ enum CaptureExportService {
     static func write(
         session: TraceSession,
         events: [CaptureEventEnvelope],
+        eventJournal: EventJournal? = nil,
         snapshot: ProcessTreeSnapshot?,
         droppedEventCount: UInt64,
         dropCounters: DropCounters? = nil,
@@ -50,6 +52,30 @@ enum CaptureExportService {
             try manager.removeItem(at: destination)
         }
         try manager.createDirectory(at: destination, withIntermediateDirectories: true)
+        let eventsURL = destination.appendingPathComponent("events.ndjson")
+        let eventCount: Int
+        var resolvedDropCounters = dropCounters
+        if let eventJournal {
+            let result = try eventJournal.copyEvents(to: eventsURL)
+            eventCount = result.eventCount
+            let previousJournalDrops = dropCounters?.journal ?? 0
+            let totalWithoutJournal = max(dropCounters?.total ?? 0, previousJournalDrops) - previousJournalDrops
+            resolvedDropCounters = DropCounters(
+                total: totalWithoutJournal + result.droppedEventCount,
+                uiBuffer: dropCounters?.uiBuffer ?? 0,
+                journal: result.droppedEventCount,
+                collectors: dropCounters?.collectors ?? []
+            )
+        } else {
+            let compactEncoder = JSONEncoder()
+            var eventStream = Data()
+            for event in events {
+                eventStream.append(try compactEncoder.encode(event))
+                eventStream.append(0x0a)
+            }
+            try eventStream.write(to: eventsURL, options: .atomic)
+            eventCount = events.count
+        }
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         encoder.dateEncodingStrategy = .iso8601
@@ -57,8 +83,8 @@ enum CaptureExportService {
             schemaVersion: CaptureEventEnvelope.currentSchemaVersion,
             sessionID: session.id,
             exportedAt: Date(),
-            eventCount: events.count,
-            droppedEventCount: droppedEventCount,
+            eventCount: eventCount,
+            droppedEventCount: resolvedDropCounters?.total ?? droppedEventCount,
             targetPID: targetPID,
             targetPath: targetPath,
             includesFullFidelityPayloads: true,
@@ -67,19 +93,12 @@ enum CaptureExportService {
                 "Protected targets may have capability gaps recorded by the app.",
             ],
             capabilityResults: capabilityResults,
-            dropCounters: dropCounters
+            dropCounters: resolvedDropCounters
         )
         try encoder.encode(manifest).write(
             to: destination.appendingPathComponent("manifest.json"),
             options: .atomic
         )
-        let compactEncoder = JSONEncoder()
-        var eventStream = Data()
-        for event in events {
-            eventStream.append(try compactEncoder.encode(event))
-            eventStream.append(0x0a)
-        }
-        try eventStream.write(to: destination.appendingPathComponent("events.ndjson"), options: .atomic)
         if let snapshot {
             try encoder.encode(snapshot).write(
                 to: destination.appendingPathComponent("snapshot.json"),
