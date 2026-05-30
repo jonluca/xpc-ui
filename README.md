@@ -22,6 +22,10 @@ an executable. For a deterministic first capture, select the built fixture:
 .derived/Build/Products/Debug/XPC Fixture.app
 ```
 
+The fixture emits classic connection traffic and public session traffic,
+including async replies, sync replies, nested values, binary data, and an
+intentional no-reply message.
+
 The **Kernel** switch is intentionally opt-in and must be enabled before
 launching the target.
 

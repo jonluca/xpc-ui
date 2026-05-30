@@ -59,5 +59,7 @@ private enum FixtureTraffic {
         let errorMessage = xpc_dictionary_create(nil, nil, 0)
         xpc_dictionary_set_string(errorMessage, "kind", "error")
         xpc_connection_send_message(connection, errorMessage)
+
+        xpcui_fixture_send_session_traffic()
     }
 }

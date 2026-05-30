@@ -96,6 +96,7 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.jonluca.xpcui.fixture
         PRODUCT_NAME: XPC Fixture
+        SWIFT_OBJC_BRIDGING_HEADER: Sources/XPCFixture/XPCFixtureTraffic.h
     info:
       path: Sources/XPCFixture/Info.plist
       properties:

@@ -57,6 +57,18 @@ final class XPCTraceHookCoverageTests: XCTestCase {
         XCTAssertTrue(source.contains("@selector(initWithListenerEndpoint:)"))
     }
 
+    func testFixtureExercisesPublicSessionTraffic() throws {
+        let source = try String(
+            contentsOf: repositoryRoot.appendingPathComponent("Sources/XPCFixture/XPCFixtureTraffic.c")
+        )
+
+        XCTAssertTrue(source.contains("xpc_session_create_xpc_service("))
+        XCTAssertTrue(source.contains("xpc_session_send_message_with_reply_async("))
+        XCTAssertTrue(source.contains("xpc_session_send_message_with_reply_sync("))
+        XCTAssertTrue(source.contains("xpc_session_send_message("))
+        XCTAssertTrue(source.contains("xpc_session_cancel("))
+    }
+
     private var repositoryRoot: URL {
         URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
