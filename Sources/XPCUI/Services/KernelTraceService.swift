@@ -21,10 +21,18 @@ final class KernelTraceService: @unchecked Sendable {
     }
 
     private let queue = DispatchQueue(label: "com.jonluca.xpcui.kernel-trace")
+    private let lock = NSLock()
     private var process: Process?
 
-    func start(pid: Int32, categories: Set<Category>, onLine: @escaping @Sendable (String) -> Void) throws {
+    func start(
+        pid: Int32,
+        categories: Set<Category>,
+        onLine: @escaping @Sendable (String) -> Void,
+        onTermination: @escaping @Sendable (Int32) -> Void
+    ) throws {
         guard !categories.isEmpty else { throw TraceError.noCategories }
+        lock.lock()
+        defer { lock.unlock() }
         guard process == nil else { throw TraceError.alreadyRunning }
         let pipe = Pipe()
         let process = Process()
@@ -43,13 +51,25 @@ final class KernelTraceService: @unchecked Sendable {
         queue.async { [weak self] in
             process.waitUntilExit()
             pipe.fileHandleForReading.readabilityHandler = nil
-            self?.process = nil
+            self?.clear(process: process)
+            onTermination(process.terminationStatus)
         }
     }
 
     func stop() {
+        lock.lock()
+        let process = process
+        self.process = nil
+        lock.unlock()
         process?.terminate()
-        process = nil
+    }
+
+    private func clear(process: Process) {
+        lock.lock()
+        if self.process === process {
+            self.process = nil
+        }
+        lock.unlock()
     }
 
     static func script(pid: Int32, categories: Set<Category>) -> String {

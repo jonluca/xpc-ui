@@ -1,11 +1,17 @@
 import Foundation
+import ServiceManagement
 
 enum ProcessSnapshotService {
     static func snapshot(pid: Int32) async -> ProcessSnapshot {
         let directSnapshot = await Task.detached(priority: .utility) {
             snapshotDirectly(pid: pid)
         }.value
-        guard directSnapshot.error != nil else { return directSnapshot }
+        guard
+            directSnapshot.error != nil,
+            SMAppService.daemon(plistName: "com.jonluca.xpcui.capture-helper.plist").status == .enabled
+        else {
+            return directSnapshot
+        }
         return await CaptureHelperClient.shared.snapshot(pid: pid) ?? directSnapshot
     }
 

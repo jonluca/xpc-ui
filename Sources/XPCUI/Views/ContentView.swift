@@ -54,10 +54,16 @@ private enum SidebarItem: String, CaseIterable, Identifiable {
 
 private struct SidebarStatus: View {
     @ObservedObject var store: EventStore
+    @ObservedObject var sessionController: SessionController
+
+    init(store: EventStore) {
+        self.store = store
+        sessionController = store.sessionController
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 5) {
-            Text(store.sessionController.status)
+            Text(sessionController.status)
                 .font(.caption.weight(.semibold))
             Text("\(store.events.count.formatted()) events")
                 .font(.caption)
@@ -94,8 +100,14 @@ private struct TimelineScreen: View {
 
 private struct CaptureToolbar: View {
     @ObservedObject var store: EventStore
+    @ObservedObject var sessionController: SessionController
     @State private var errorMessage: String?
     @State private var showExportWarning = false
+
+    init(store: EventStore) {
+        self.store = store
+        sessionController = store.sessionController
+    }
 
     var body: some View {
         HStack(spacing: 10) {
@@ -107,15 +119,25 @@ private struct CaptureToolbar: View {
                 store.paused.toggle()
             }
             Button("Stop", systemImage: "stop.fill") {
-                store.sessionController.stop()
+                sessionController.stop()
             }
-            .disabled(store.sessionController.targetPID == nil)
+            .disabled(sessionController.targetPID == nil)
             Button("Export", systemImage: "square.and.arrow.up") {
                 showExportWarning = true
             }
-            .disabled(store.sessionController.session == nil)
+            .disabled(sessionController.session == nil)
             Divider()
                 .frame(height: 20)
+            Toggle("Kernel", isOn: $sessionController.kernelDeepModeEnabled)
+                .toggleStyle(.switch)
+                .disabled(sessionController.targetPID != nil)
+                .help("Opt in to filtered DTrace syscall and mach_trap events before launch.")
+            if sessionController.kernelDeepModeEnabled {
+                Text(sessionController.kernelTraceStatus)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
             Picker("Category", selection: $store.selectedCategory) {
                 ForEach(store.categories, id: \.self) { category in
                     Text(category.capitalized).tag(category)
@@ -154,7 +176,7 @@ private struct CaptureToolbar: View {
         guard panel.runModal() == .OK, let url = panel.url else { return }
         Task {
             do {
-                try await store.sessionController.launch(url: url)
+                try await sessionController.launch(url: url)
             } catch {
                 errorMessage = error.localizedDescription
             }
