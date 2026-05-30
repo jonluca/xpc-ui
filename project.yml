@@ -1,0 +1,116 @@
+name: XPCUI
+options:
+  bundleIdPrefix: com.jonluca.xpcui
+  deploymentTarget:
+    macOS: "14.0"
+settings:
+  base:
+    MACOSX_DEPLOYMENT_TARGET: "14.0"
+    SWIFT_VERSION: "5.0"
+    CLANG_ENABLE_MODULES: YES
+    ENABLE_HARDENED_RUNTIME: NO
+targets:
+  XPCTrace:
+    type: library.dynamic
+    platform: macOS
+    sources:
+      - Sources/XPCTrace
+    settings:
+      base:
+        PRODUCT_NAME: XPCTrace
+        PRODUCT_BUNDLE_IDENTIFIER: com.jonluca.xpcui.trace
+        SKIP_INSTALL: YES
+  CaptureHelper:
+    type: tool
+    platform: macOS
+    sources:
+      - Sources/CaptureHelper
+      - Sources/NativeSnapshot
+    settings:
+      base:
+        PRODUCT_NAME: CaptureHelper
+        PRODUCT_BUNDLE_IDENTIFIER: com.jonluca.xpcui.capture-helper
+  XPCUI:
+    type: application
+    platform: macOS
+    sources:
+      - Sources/XPCUI
+      - Sources/NativeSnapshot
+    dependencies:
+      - target: XPCTrace
+        embed: true
+      - target: CaptureHelper
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.jonluca.xpcui
+        PRODUCT_NAME: XPC UI
+        INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.developer-tools
+        SWIFT_OBJC_BRIDGING_HEADER: Sources/NativeSnapshot/NativeSnapshot.h
+    info:
+      path: Sources/XPCUI/Info.plist
+      properties:
+        CFBundleDisplayName: XPC UI
+        LSMinimumSystemVersion: "14.0"
+        NSHumanReadableCopyright: Copyright © 2026 JonLuca DeCaro
+    postBuildScripts:
+      - name: Bundle Capture Helper
+        script: |
+          set -euo pipefail
+          helper_dir="$TARGET_BUILD_DIR/$CONTENTS_FOLDER_PATH/Library/LaunchServices"
+          daemon_dir="$TARGET_BUILD_DIR/$CONTENTS_FOLDER_PATH/Library/LaunchDaemons"
+          mkdir -p "$helper_dir" "$daemon_dir"
+          cp "$BUILT_PRODUCTS_DIR/CaptureHelper" "$helper_dir/com.jonluca.xpcui.capture-helper"
+          cp "$SRCROOT/Resources/com.jonluca.xpcui.capture-helper.plist" "$daemon_dir/com.jonluca.xpcui.capture-helper.plist"
+  XPCFixtureService:
+    type: xpc-service
+    platform: macOS
+    sources:
+      - Sources/XPCFixtureService
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.jonluca.xpcui.fixture.service
+        PRODUCT_NAME: XPCFixtureService
+    info:
+      path: Sources/XPCFixtureService/Info.plist
+      properties:
+        CFBundleDisplayName: XPC Fixture Service
+        CFBundlePackageType: XPC!
+        XPCService:
+          ServiceType: Application
+  XPCFixture:
+    type: application
+    platform: macOS
+    sources:
+      - Sources/XPCFixture
+    dependencies:
+      - target: XPCFixtureService
+        embed: true
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.jonluca.xpcui.fixture
+        PRODUCT_NAME: XPC Fixture
+    info:
+      path: Sources/XPCFixture/Info.plist
+      properties:
+        CFBundleDisplayName: XPC Fixture
+        LSMinimumSystemVersion: "14.0"
+  XPCUITests:
+    type: bundle.unit-test
+    platform: macOS
+    sources:
+      - Tests/XPCUITests
+    dependencies:
+      - target: XPCUI
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.jonluca.xpcui.tests
+schemes:
+  XPCUI:
+    build:
+      targets:
+        XPCUI: all
+        XPCFixture: all
+        XPCUITests: [test]
+    test:
+      targets:
+        - XPCUITests

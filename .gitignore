@@ -1,0 +1,4 @@
+.derived/
+XPCUI.xcodeproj/
+*.xcuserstate
+.DS_Store
