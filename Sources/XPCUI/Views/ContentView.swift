@@ -93,10 +93,13 @@ private struct TimelineScreen: View {
 
 private struct CaptureToolbar: View {
     @ObservedObject var store: EventStore
+    @State private var errorMessage: String?
 
     var body: some View {
         HStack(spacing: 10) {
-            Button("Launch Target", systemImage: "play.fill") {}
+            Button("Launch Target", systemImage: "play.fill") {
+                selectAndLaunch()
+            }
                 .buttonStyle(.borderedProminent)
             Button(store.paused ? "Resume" : "Pause", systemImage: store.paused ? "play" : "pause") {
                 store.paused.toggle()
@@ -119,6 +122,27 @@ private struct CaptureToolbar: View {
             Spacer()
         }
         .padding(10)
+        .alert("Unable to launch target", isPresented: .constant(errorMessage != nil)) {
+            Button("OK") { errorMessage = nil }
+        } message: {
+            Text(errorMessage ?? "")
+        }
+    }
+
+    private func selectAndLaunch() {
+        let panel = NSOpenPanel()
+        panel.title = "Choose an app bundle or executable"
+        panel.canChooseDirectories = false
+        panel.canChooseFiles = true
+        panel.allowsMultipleSelection = false
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        Task {
+            do {
+                try await store.sessionController.launch(url: url)
+            } catch {
+                errorMessage = error.localizedDescription
+            }
+        }
     }
 }
 
