@@ -10,7 +10,18 @@ final class EventStore: ObservableObject {
         didSet { rebuildVisibleEvents() }
     }
     @Published var selectedCategory = "all" {
-        didSet { rebuildVisibleEvents() }
+        didSet {
+            guard selectedCategory != oldValue else { return }
+            guard !isApplyingPreset else { return }
+            selectedPreset = .all
+            rebuildVisibleEvents()
+        }
+    }
+    @Published var selectedProcessID: Int32? {
+        didSet {
+            guard selectedProcessID != oldValue else { return }
+            rebuildVisibleEvents()
+        }
     }
     @Published var paused = false
     @Published private(set) var droppedEventCount: UInt64 = 0
@@ -20,6 +31,8 @@ final class EventStore: ObservableObject {
     @Published private(set) var resourceDeltas: [Int32: ProcessResourceDelta] = [:]
     @Published private(set) var xpcServicesByPID: [Int32: Set<String>] = [:]
     @Published private(set) var categories = ["all"]
+    @Published private(set) var timelineProcesses: [TimelineProcessOption] = []
+    @Published private(set) var selectedPreset = TimelinePreset.all
 
     let sessionController: SessionController
 
@@ -31,6 +44,10 @@ final class EventStore: ObservableObject {
     private let retainedEventsAfterTrim = 180_000
     private var categorySet = Set<String>()
     private var collectorDropCounts: [CollectorID: UInt64] = [:]
+    private var observedProcessIDs = Set<Int32>()
+    private var processNamesByPID: [Int32: String] = [:]
+    private var launchTargetPID: Int32?
+    private var isApplyingPreset = false
 
     init() {
         sessionController = SessionController()
@@ -75,7 +92,12 @@ final class EventStore: ObservableObject {
         xpcServicesByPID.removeAll(keepingCapacity: true)
         categorySet.removeAll(keepingCapacity: true)
         categories = ["all"]
+        timelineProcesses.removeAll(keepingCapacity: true)
         collectorDropCounts.removeAll(keepingCapacity: true)
+        observedProcessIDs.removeAll(keepingCapacity: true)
+        processNamesByPID.removeAll(keepingCapacity: true)
+        launchTargetPID = nil
+        selectedProcessID = nil
         pending.reset()
     }
 
@@ -110,14 +132,36 @@ final class EventStore: ObservableObject {
             }
         )
         self.snapshot = snapshot
+        launchTargetPID = snapshot.rootPID
+        observedProcessIDs.formUnion(snapshot.processIDs)
+        for process in snapshot.processes {
+            if let name = process.name, !name.isEmpty {
+                processNamesByPID[process.pid] = name
+            }
+        }
+        publishTimelineProcesses()
+    }
+
+    func apply(preset: TimelinePreset) {
+        isApplyingPreset = true
+        selectedPreset = preset
+        selectedCategory = "all"
+        isApplyingPreset = false
+        rebuildVisibleEvents()
     }
 
     private func drainPendingEvents() {
         guard !paused else { return }
         let batch = pending.drain()
         guard !batch.events.isEmpty || batch.decodeFailures > 0 || batch.overflowDrops > 0 else { return }
+        let filter = currentFilter
         events.append(contentsOf: batch.events)
-        visibleEvents.append(contentsOf: batch.events.filter(matchesCurrentFilter))
+        visibleEvents.append(contentsOf: batch.events.filter(filter.matches))
+        let previousProcessCount = observedProcessIDs.count
+        observedProcessIDs.formUnion(batch.events.map(\.pid))
+        if observedProcessIDs.count != previousProcessCount {
+            publishTimelineProcesses()
+        }
         let previousCategories = categorySet.count
         categorySet.formUnion(batch.events.map(\.category))
         if categorySet.count != previousCategories {
@@ -151,17 +195,103 @@ final class EventStore: ObservableObject {
     }
 
     private func rebuildVisibleEvents() {
-        visibleEvents = events.filter(matchesCurrentFilter)
+        visibleEvents = events.filter(currentFilter.matches)
+        if let selectedEventID, !visibleEvents.contains(where: { $0.id == selectedEventID }) {
+            self.selectedEventID = nil
+        }
         timelineGeneration += 1
     }
 
-    private func matchesCurrentFilter(_ event: CaptureEventEnvelope) -> Bool {
-        let matchesCategory = selectedCategory == "all" || event.category == selectedCategory
+    private var currentFilter: TimelineFilter {
+        TimelineFilter(
+            searchText: searchText,
+            category: selectedCategory,
+            processID: selectedProcessID,
+            preset: selectedPreset
+        )
+    }
+
+    private func publishTimelineProcesses() {
+        let nextProcesses = observedProcessIDs.sorted().map { pid in
+            TimelineProcessOption(
+                pid: pid,
+                name: processNamesByPID[pid],
+                isLaunchTarget: pid == launchTargetPID
+            )
+        }
+        if nextProcesses != timelineProcesses {
+            timelineProcesses = nextProcesses
+        }
+    }
+}
+
+struct TimelineProcessOption: Equatable, Identifiable, Sendable {
+    let pid: Int32
+    let name: String?
+    let isLaunchTarget: Bool
+
+    var id: Int32 { pid }
+
+    var title: String {
+        guard let name, !name.isEmpty else {
+            return isLaunchTarget ? "PID \(pid) (target)" : "PID \(pid)"
+        }
+        return isLaunchTarget ? "\(name) (\(pid), target)" : "\(name) (\(pid))"
+    }
+}
+
+enum TimelinePreset: String, CaseIterable, Identifiable, Sendable {
+    case all
+    case ipcFirst
+    case xpcPayloads
+    case kernelDeep
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .all: "All Traffic"
+        case .ipcFirst: "IPC First"
+        case .xpcPayloads: "XPC Payloads"
+        case .kernelDeep: "Kernel Deep"
+        }
+    }
+
+    var icon: String {
+        switch self {
+        case .all: "list.bullet"
+        case .ipcFirst: "arrow.left.arrow.right"
+        case .xpcPayloads: "bubble.left.and.bubble.right"
+        case .kernelDeep: "waveform.path.ecg"
+        }
+    }
+}
+
+struct TimelineFilter: Sendable {
+    let searchText: String
+    let category: String
+    let processID: Int32?
+    let preset: TimelinePreset
+
+    func matches(_ event: CaptureEventEnvelope) -> Bool {
+        let matchesPreset: Bool
+        switch preset {
+        case .all:
+            matchesPreset = true
+        case .ipcFirst:
+            matchesPreset = event.category == "xpc" || event.category == "mach_trap"
+        case .xpcPayloads:
+            matchesPreset = event.category == "xpc"
+        case .kernelDeep:
+            matchesPreset = event.category == "syscall" || event.category == "mach_trap"
+        }
+        let matchesCategory = category == "all" || event.category == category
+        let matchesProcess = processID == nil || event.pid == processID
         let matchesSearch = searchText.isEmpty
             || event.summary.localizedCaseInsensitiveContains(searchText)
             || event.operation.localizedCaseInsensitiveContains(searchText)
             || (event.serviceName?.localizedCaseInsensitiveContains(searchText) ?? false)
-        return matchesCategory && matchesSearch
+        return matchesPreset && matchesCategory && matchesProcess && matchesSearch
     }
 }
 

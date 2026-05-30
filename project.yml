@@ -42,6 +42,7 @@ targets:
     dependencies:
       - target: XPCTrace
         embed: true
+        link: false
       - target: CaptureHelper
     settings:
       base:

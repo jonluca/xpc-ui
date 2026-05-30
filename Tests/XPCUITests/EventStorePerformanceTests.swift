@@ -47,21 +47,42 @@ final class EventStorePerformanceTests: XCTestCase {
         )
     }
 
-    private func syntheticEvent() -> CaptureEventEnvelope {
+    func testIPCPresetKeepsXPCAndMachTrapEvents() {
+        let filter = TimelineFilter(searchText: "", category: "all", processID: nil, preset: .ipcFirst)
+
+        XCTAssertTrue(filter.matches(syntheticEvent(category: "xpc")))
+        XCTAssertTrue(filter.matches(syntheticEvent(category: "mach_trap")))
+        XCTAssertFalse(filter.matches(syntheticEvent(category: "syscall")))
+    }
+
+    func testTimelineFilterIntersectsProcessCategoryAndSearch() {
+        let filter = TimelineFilter(searchText: "lookup", category: "xpc", processID: 42, preset: .all)
+
+        XCTAssertTrue(filter.matches(syntheticEvent(pid: 42, category: "xpc", summary: "lookup request")))
+        XCTAssertFalse(filter.matches(syntheticEvent(pid: 43, category: "xpc", summary: "lookup request")))
+        XCTAssertFalse(filter.matches(syntheticEvent(pid: 42, category: "syscall", summary: "lookup request")))
+        XCTAssertFalse(filter.matches(syntheticEvent(pid: 42, category: "xpc", summary: "unrelated")))
+    }
+
+    private func syntheticEvent(
+        pid: Int32 = 2,
+        category: String = "xpc",
+        summary: String = "synthetic event"
+    ) -> CaptureEventEnvelope {
         CaptureEventEnvelope(
             schemaVersion: CaptureEventEnvelope.currentSchemaVersion,
             sessionID: "stress",
             sequence: 1,
             monotonicTimestamp: 1,
-            pid: 2,
+            pid: pid,
             parentPID: 1,
             threadID: 3,
             source: "synthetic",
-            category: "xpc",
+            category: category,
             direction: "outgoing",
             operation: "send",
             serviceName: "com.example.synthetic",
-            summary: "synthetic event",
+            summary: summary,
             payload: nil,
             diagnostics: [],
             droppedEventCount: 0

@@ -112,6 +112,7 @@ private struct TimelineScreen: View {
                     .frame(minWidth: 280, idealWidth: 360)
             }
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .navigationTitle("Live Timeline")
     }
 }
@@ -129,50 +130,72 @@ private struct CaptureToolbar: View {
     }
 
     var body: some View {
-        HStack(spacing: 10) {
-            Button("Launch Target", systemImage: "play.fill") {
-                selectAndLaunch()
-            }
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 10) {
+                Button("Launch Target", systemImage: "play.fill") {
+                    selectAndLaunch()
+                }
                 .buttonStyle(.borderedProminent)
-            Button(store.paused ? "Resume" : "Pause", systemImage: store.paused ? "play" : "pause") {
-                store.paused.toggle()
-            }
-            Button("Stop", systemImage: "stop.fill") {
-                sessionController.stop()
-            }
-            .disabled(sessionController.targetPID == nil)
-            Button("Export", systemImage: "square.and.arrow.up") {
-                showExportWarning = true
-            }
-            .disabled(sessionController.session == nil)
-            Divider()
-                .frame(height: 20)
-            Toggle("Kernel", isOn: $sessionController.kernelDeepModeEnabled)
-                .toggleStyle(.switch)
-                .disabled(sessionController.targetPID != nil)
-                .help("Opt in to filtered DTrace syscall and mach_trap events before launch.")
-            Menu("Kernel Filters", systemImage: "line.3.horizontal.decrease.circle") {
-                ForEach(KernelTraceService.Category.allCases) { category in
-                    Toggle(category.title, isOn: kernelCategoryBinding(category))
+                Button(store.paused ? "Resume" : "Pause", systemImage: store.paused ? "play" : "pause") {
+                    store.paused.toggle()
                 }
-            }
-            .disabled(sessionController.targetPID != nil || !sessionController.kernelDeepModeEnabled)
-            if sessionController.kernelDeepModeEnabled {
-                Text(sessionController.kernelTraceStatus)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-            }
-            Picker("Category", selection: $store.selectedCategory) {
-                ForEach(store.categories, id: \.self) { category in
-                    Text(category.capitalized).tag(category)
+                Button("Stop", systemImage: "stop.fill") {
+                    sessionController.stop()
                 }
+                .disabled(sessionController.targetPID == nil)
+                Button("Export", systemImage: "square.and.arrow.up") {
+                    showExportWarning = true
+                }
+                .disabled(sessionController.session == nil)
+                Divider()
+                    .frame(height: 20)
+                Toggle("Kernel", isOn: $sessionController.kernelDeepModeEnabled)
+                    .toggleStyle(.switch)
+                    .fixedSize()
+                    .disabled(sessionController.targetPID != nil)
+                    .help("Opt in to filtered DTrace syscall and mach_trap events before launch.")
+                Menu("Kernel Filters", systemImage: "line.3.horizontal.decrease.circle") {
+                    ForEach(KernelTraceService.Category.allCases) { category in
+                        Toggle(category.title, isOn: kernelCategoryBinding(category))
+                    }
+                }
+                .disabled(sessionController.targetPID != nil || !sessionController.kernelDeepModeEnabled)
+                if sessionController.kernelDeepModeEnabled {
+                    Text(sessionController.kernelTraceStatus)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+                Spacer()
             }
-            .frame(width: 150)
-            TextField("Search events", text: $store.searchText)
-                .textFieldStyle(.roundedBorder)
-                .frame(maxWidth: 260)
-            Spacer()
+            HStack(spacing: 10) {
+                Menu(store.selectedPreset.title, systemImage: store.selectedPreset.icon) {
+                    ForEach(TimelinePreset.allCases) { preset in
+                        Button {
+                            store.apply(preset: preset)
+                        } label: {
+                            Label(preset.title, systemImage: preset.icon)
+                        }
+                    }
+                }
+                Picker("Process", selection: $store.selectedProcessID) {
+                    Text("All Processes").tag(Int32?.none)
+                    ForEach(store.timelineProcesses) { process in
+                        Text(process.title).tag(Optional(process.pid))
+                    }
+                }
+                .frame(width: 200)
+                Picker("Category", selection: $store.selectedCategory) {
+                    ForEach(store.categories, id: \.self) { category in
+                        Text(category.capitalized).tag(category)
+                    }
+                }
+                .frame(width: 140)
+                TextField("Search events", text: $store.searchText)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(maxWidth: 260)
+                Spacer()
+            }
         }
         .padding(10)
         .alert("Unable to launch target", isPresented: .constant(errorMessage != nil)) {
