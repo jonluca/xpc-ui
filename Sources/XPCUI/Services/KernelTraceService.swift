@@ -50,17 +50,17 @@ final class KernelTraceService: @unchecked Sendable {
         process.arguments = ["-q", "-n", Self.script(pids: pids, categories: categories)]
         process.standardOutput = pipe
         process.standardError = pipe
+        let lineBuffer = KernelTraceLineBuffer()
         pipe.fileHandleForReading.readabilityHandler = { handle in
-            guard let output = String(data: handle.availableData, encoding: .utf8), !output.isEmpty else {
-                return
-            }
-            output.split(separator: "\n").forEach { onLine(String($0)) }
+            lineBuffer.append(handle.availableData).forEach(onLine)
         }
         try process.run()
         self.process = process
         queue.async { [weak self] in
             process.waitUntilExit()
             pipe.fileHandleForReading.readabilityHandler = nil
+            lineBuffer.append(pipe.fileHandleForReading.readDataToEndOfFile()).forEach(onLine)
+            lineBuffer.finish().forEach(onLine)
             self?.clear(process: process)
             onTermination(process.terminationStatus)
         }

@@ -34,4 +34,15 @@ final class KernelTraceServiceTests: XCTestCase {
             )
         )
     }
+
+    func testLineBufferPreservesFragmentedTraceLines() {
+        let buffer = KernelTraceLineBuffer()
+
+        XCTAssertEqual(buffer.append(Data("syscall\tentry\top".utf8)), [])
+        XCTAssertEqual(
+            buffer.append(Data("en\t42\t1\t7\nmach_trap\tentry\tmach_msg".utf8)),
+            ["syscall\tentry\topen\t42\t1\t7"]
+        )
+        XCTAssertEqual(buffer.finish(), ["mach_trap\tentry\tmach_msg"])
+    }
 }

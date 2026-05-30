@@ -26,6 +26,7 @@ final class SessionController: ObservableObject {
     func stop() {
         socketServer.stop()
         kernelTraceService.stop()
+        CaptureHelperClient.shared.stopKernelTrace()
         kernelTraceGeneration += 1
         kernelTracedPIDs.removeAll()
         snapshotTimer?.invalidate()
@@ -92,33 +93,97 @@ final class SessionController: ObservableObject {
         kernelTraceGeneration += 1
         let generation = kernelTraceGeneration
         let decoder = kernelTraceDecoder
+        guard !pids.isEmpty else {
+            kernelTraceStatus = "Unavailable: no live process is available for kernel tracing."
+            return
+        }
+        guard !selectedKernelCategories.isEmpty else {
+            kernelTraceStatus = "Unavailable: select at least one kernel trace category."
+            return
+        }
+        let categories = selectedKernelCategories
+        let onLine: @Sendable (String) -> Void = { [weak store] line in
+            guard
+                let event = decoder.decode(line: line, sessionID: sessionID),
+                let frame = try? JSONEncoder().encode(event)
+            else {
+                return
+            }
+            store?.ingest(frame: frame)
+        }
+        let onTermination: @Sendable (Int32) -> Void = { [weak self] status in
+            Task { @MainActor [weak self] in
+                guard self?.targetPID != nil, self?.kernelTraceGeneration == generation else { return }
+                self?.kernelTraceStatus = status == 0
+                    ? "Stopped"
+                    : "Unavailable (DTrace exited with status \(status))"
+            }
+        }
+        kernelTracedPIDs = pids
+        let processCount = "\(pids.count) process\(pids.count == 1 ? "" : "es")"
+        guard CaptureHelperClient.shared.isEnabled else {
+            startDirectKernelTrace(
+                pids: pids,
+                categories: categories,
+                processCount: processCount,
+                onLine: onLine,
+                onTermination: onTermination
+            )
+            return
+        }
+        kernelTraceStatus = "Requesting privileged trace for \(processCount)"
+        let script = KernelTraceService.script(pids: pids, categories: categories)
+        Task { [weak self] in
+            let helperError = await CaptureHelperClient.shared.startKernelTrace(
+                script: script,
+                onLine: onLine,
+                onTermination: onTermination
+            )
+            guard
+                let self,
+                self.targetPID != nil,
+                self.kernelTraceGeneration == generation
+            else {
+                return
+            }
+            guard let helperError else {
+                self.kernelTraceStatus = "Privileged helper tracing \(processCount)"
+                return
+            }
+            self.startDirectKernelTrace(
+                pids: pids,
+                categories: categories,
+                processCount: processCount,
+                helperError: helperError,
+                onLine: onLine,
+                onTermination: onTermination
+            )
+        }
+    }
+
+    private func startDirectKernelTrace(
+        pids: Set<Int32>,
+        categories: Set<KernelTraceService.Category>,
+        processCount: String,
+        helperError: String? = nil,
+        onLine: @escaping @Sendable (String) -> Void,
+        onTermination: @escaping @Sendable (Int32) -> Void
+    ) {
         do {
             try kernelTraceService.start(
                 pids: pids,
-                categories: selectedKernelCategories,
-                onLine: { [weak store] line in
-                    guard
-                        let event = decoder.decode(line: line, sessionID: sessionID),
-                        let frame = try? JSONEncoder().encode(event)
-                    else {
-                        return
-                    }
-                    store?.ingest(frame: frame)
-                },
-                onTermination: { [weak self] status in
-                    Task { @MainActor [weak self] in
-                        guard self?.targetPID != nil, self?.kernelTraceGeneration == generation else { return }
-                        self?.kernelTraceStatus = status == 0
-                            ? "Stopped"
-                            : "Unavailable (DTrace exited with status \(status))"
-                    }
-                }
+                categories: categories,
+                onLine: onLine,
+                onTermination: onTermination
             )
-            kernelTracedPIDs = pids
-            kernelTraceStatus = "Requested for \(pids.count) process\(pids.count == 1 ? "" : "es")"
+            kernelTraceStatus = helperError == nil
+                ? "Direct DTrace requested for \(processCount)"
+                : "Direct DTrace fallback requested for \(processCount)"
         } catch {
             kernelTracedPIDs.removeAll()
-            kernelTraceStatus = "Unavailable: \(error.localizedDescription)"
+            kernelTraceStatus = [helperError, error.localizedDescription]
+                .compactMap { $0 }
+                .joined(separator: " ")
         }
     }
 

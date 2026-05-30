@@ -43,8 +43,10 @@ launching the target.
   registered from **Lab Setup** with admin approval.
 - `Endpoint Security`: an explicit gated adapter until Apple's restricted
   entitlement is provisioned.
-- `Kernel deep mode`: filtered `syscall` and `mach_trap` DTrace adapters. The
-  timeline reports runtime denial when SIP or privileges prevent capture.
+- `Kernel deep mode`: filtered `syscall` and `mach_trap` DTrace adapters. When
+  the LaunchDaemon is enabled it owns DTrace and streams lines back over a
+  private XPC callback endpoint; direct launch remains a reported fallback.
+  The timeline reports runtime denial when SIP or privileges prevent capture.
 
 ## Export
 
