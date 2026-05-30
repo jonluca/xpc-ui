@@ -148,6 +148,9 @@ private final class ListenerDelegate: NSObject, NSXPCListenerDelegate {
         guard SecCodeCopyGuestWithAttributes(nil, attributes, [], &code) == errSecSuccess, let code else {
             return false
         }
+        guard SecCodeCheckValidity(code, [], nil) == errSecSuccess else {
+            return false
+        }
         var staticCode: SecStaticCode?
         guard SecCodeCopyStaticCode(code, [], &staticCode) == errSecSuccess, let staticCode else {
             return false
@@ -155,11 +158,31 @@ private final class ListenerDelegate: NSObject, NSXPCListenerDelegate {
         var information: CFDictionary?
         guard SecCodeCopySigningInformation(staticCode, [], &information) == errSecSuccess,
               let signingInformation = information as? [CFString: Any],
-              let identifier = signingInformation[kSecCodeInfoIdentifier] as? String
+              let identifier = signingInformation[kSecCodeInfoIdentifier] as? String,
+              let teamIdentifier = signingInformation[kSecCodeInfoTeamIdentifier] as? String,
+              let ownTeamIdentifier = ownTeamIdentifier()
         else {
             return false
         }
-        return identifier == "com.jonluca.xpcui"
+        return identifier == "com.jonluca.xpcui" && teamIdentifier == ownTeamIdentifier
+    }
+
+    private static func ownTeamIdentifier() -> String? {
+        var code: SecCode?
+        guard SecCodeCopySelf([], &code) == errSecSuccess, let code else {
+            return nil
+        }
+        var staticCode: SecStaticCode?
+        guard SecCodeCopyStaticCode(code, [], &staticCode) == errSecSuccess, let staticCode else {
+            return nil
+        }
+        var information: CFDictionary?
+        guard SecCodeCopySigningInformation(staticCode, [], &information) == errSecSuccess,
+              let signingInformation = information as? [CFString: Any]
+        else {
+            return nil
+        }
+        return signingInformation[kSecCodeInfoTeamIdentifier] as? String
     }
 }
 

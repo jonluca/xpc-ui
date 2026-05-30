@@ -58,8 +58,8 @@ launching the target.
 - `Process snapshots`: files, folders, sockets, Mach namespace capacity, decoded
   port rights, and refresh-to-refresh deltas when the target permits inspection.
   Observed XPC services stay separate from opaque process-local Mach names.
-- `Privileged helper`: a signed-client-validated LaunchDaemon snapshot RPC,
-  registered from **Lab Setup** with admin approval.
+- `Privileged helper`: a valid same-team signed-client LaunchDaemon snapshot
+  RPC, registered from **Lab Setup** with admin approval.
 - `Endpoint Security`: an embedded, entitlement-gated system extension for
   process lifecycle, file open/close, UNIX-domain socket connects, and named
   XPC service connects. **Lab Setup** exposes explicit activation and Full Disk
