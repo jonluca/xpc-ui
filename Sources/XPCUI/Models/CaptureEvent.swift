@@ -32,7 +32,7 @@ struct TraceAuthentication: Codable {
     let authToken: String
 }
 
-struct ProcessSnapshot: Codable, Sendable {
+struct ProcessSnapshot: Codable, Identifiable, Sendable {
     struct OpenFile: Codable, Identifiable, Sendable {
         let fd: Int32
         let path: String
@@ -60,14 +60,52 @@ struct ProcessSnapshot: Codable, Sendable {
     }
 
     let pid: Int32
+    var parentPID: Int32?
+    var name: String?
+    var path: String?
     let error: String?
     let files: [OpenFile]
     let sockets: [Socket]
     let machPorts: [MachPort]
 
+    var id: Int32 { pid }
+
     static func unavailable(pid: Int32, error: String) -> ProcessSnapshot {
-        ProcessSnapshot(pid: pid, error: error, files: [], sockets: [], machPorts: [])
+        ProcessSnapshot(
+            pid: pid,
+            parentPID: nil,
+            name: nil,
+            path: nil,
+            error: error,
+            files: [],
+            sockets: [],
+            machPorts: []
+        )
     }
+
+    func identified(as process: TrackedProcess) -> ProcessSnapshot {
+        var snapshot = self
+        snapshot.parentPID = process.parentPID
+        snapshot.name = process.name
+        snapshot.path = process.path
+        return snapshot
+    }
+}
+
+struct TrackedProcess: Codable, Hashable, Identifiable, Sendable {
+    let pid: Int32
+    let parentPID: Int32
+    let name: String
+    let path: String
+
+    var id: Int32 { pid }
+}
+
+struct ProcessTreeSnapshot: Codable, Sendable {
+    let rootPID: Int32
+    let processes: [ProcessSnapshot]
+
+    var processIDs: Set<Int32> { Set(processes.map(\.pid)) }
 }
 
 struct CapabilityStatus: Identifiable, Sendable {

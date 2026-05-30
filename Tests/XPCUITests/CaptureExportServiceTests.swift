@@ -33,7 +33,31 @@ final class CaptureExportServiceTests: XCTestCase {
         try CaptureExportService.write(
             session: session,
             events: [event],
-            snapshot: nil,
+            snapshot: ProcessTreeSnapshot(
+                rootPID: 3,
+                processes: [
+                    ProcessSnapshot(
+                        pid: 3,
+                        parentPID: 1,
+                        name: "example",
+                        path: "/tmp/example",
+                        error: nil,
+                        files: [],
+                        sockets: [],
+                        machPorts: []
+                    ),
+                    ProcessSnapshot(
+                        pid: 4,
+                        parentPID: 3,
+                        name: "child",
+                        path: "/tmp/child",
+                        error: nil,
+                        files: [],
+                        sockets: [],
+                        machPorts: []
+                    ),
+                ]
+            ),
             droppedEventCount: 0,
             targetPID: 3,
             targetPath: "/tmp/example",
@@ -56,6 +80,12 @@ final class CaptureExportServiceTests: XCTestCase {
             try JSONDecoder().decode(CaptureEventEnvelope.self, from: Data(lines[0].utf8)),
             event
         )
+        let snapshot = try JSONDecoder().decode(
+            ProcessTreeSnapshot.self,
+            from: Data(contentsOf: export.appendingPathComponent("snapshot.json"))
+        )
+        XCTAssertEqual(snapshot.rootPID, 3)
+        XCTAssertEqual(snapshot.processes.map(\.pid), [3, 4])
         XCTAssertTrue(FileManager.default.fileExists(atPath: export.appendingPathComponent("blobs").path))
     }
 }

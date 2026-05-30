@@ -68,6 +68,11 @@ private struct SidebarStatus: View {
             Text("\(store.events.count.formatted()) events")
                 .font(.caption)
                 .foregroundStyle(.secondary)
+            if !sessionController.trackedPIDs.isEmpty {
+                Text("\(sessionController.trackedPIDs.count.formatted()) tracked process\(sessionController.trackedPIDs.count == 1 ? "" : "es")")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
             if store.droppedEventCount > 0 {
                 Text("\(store.droppedEventCount.formatted()) dropped")
                     .font(.caption)
@@ -132,6 +137,12 @@ private struct CaptureToolbar: View {
                 .toggleStyle(.switch)
                 .disabled(sessionController.targetPID != nil)
                 .help("Opt in to filtered DTrace syscall and mach_trap events before launch.")
+            Menu("Kernel Filters", systemImage: "line.3.horizontal.decrease.circle") {
+                ForEach(KernelTraceService.Category.allCases) { category in
+                    Toggle(category.title, isOn: kernelCategoryBinding(category))
+                }
+            }
+            .disabled(sessionController.targetPID != nil || !sessionController.kernelDeepModeEnabled)
             if sessionController.kernelDeepModeEnabled {
                 Text(sessionController.kernelTraceStatus)
                     .font(.caption)
@@ -194,6 +205,19 @@ private struct CaptureToolbar: View {
         } catch {
             errorMessage = error.localizedDescription
         }
+    }
+
+    private func kernelCategoryBinding(_ category: KernelTraceService.Category) -> Binding<Bool> {
+        Binding(
+            get: { sessionController.selectedKernelCategories.contains(category) },
+            set: { isEnabled in
+                if isEnabled {
+                    sessionController.selectedKernelCategories.insert(category)
+                } else {
+                    sessionController.selectedKernelCategories.remove(category)
+                }
+            }
+        )
     }
 }
 

@@ -1,20 +1,29 @@
 import Foundation
 
 final class KernelTraceService: @unchecked Sendable {
-    enum Category: String, CaseIterable, Identifiable {
+    enum Category: String, CaseIterable, Identifiable, Sendable {
         case syscall
         case machTrap = "mach_trap"
 
         var id: String { rawValue }
+
+        var title: String {
+            switch self {
+            case .syscall: "Syscalls"
+            case .machTrap: "Mach traps"
+            }
+        }
     }
 
     enum TraceError: LocalizedError {
         case noCategories
+        case noProcesses
         case alreadyRunning
 
         var errorDescription: String? {
             switch self {
             case .noCategories: "Select at least one kernel trace category."
+            case .noProcesses: "No live process is available for kernel tracing."
             case .alreadyRunning: "Kernel deep mode is already running."
             }
         }
@@ -25,19 +34,20 @@ final class KernelTraceService: @unchecked Sendable {
     private var process: Process?
 
     func start(
-        pid: Int32,
+        pids: Set<Int32>,
         categories: Set<Category>,
         onLine: @escaping @Sendable (String) -> Void,
         onTermination: @escaping @Sendable (Int32) -> Void
     ) throws {
         guard !categories.isEmpty else { throw TraceError.noCategories }
+        guard !pids.isEmpty else { throw TraceError.noProcesses }
         lock.lock()
         defer { lock.unlock() }
         guard process == nil else { throw TraceError.alreadyRunning }
         let pipe = Pipe()
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/sbin/dtrace")
-        process.arguments = ["-q", "-n", Self.script(pid: pid, categories: categories)]
+        process.arguments = ["-q", "-n", Self.script(pids: pids, categories: categories)]
         process.standardOutput = pipe
         process.standardError = pipe
         pipe.fileHandleForReading.readabilityHandler = { handle in
@@ -72,18 +82,19 @@ final class KernelTraceService: @unchecked Sendable {
         lock.unlock()
     }
 
-    static func script(pid: Int32, categories: Set<Category>) -> String {
-        categories.sorted { $0.rawValue < $1.rawValue }.map { category in
+    static func script(pids: Set<Int32>, categories: Set<Category>) -> String {
+        let predicate = pids.sorted().map { "pid == \($0)" }.joined(separator: " || ")
+        return categories.sorted { $0.rawValue < $1.rawValue }.map { category in
             """
             \(category.rawValue):::entry
-            /pid == \(pid)/
+            /\(predicate)/
             {
-                printf("\(category.rawValue)\\tentry\\t%s\\t%d\\t%d\\n", probefunc, pid, tid);
+                printf("\(category.rawValue)\\tentry\\t%s\\t%d\\t%d\\t%d\\n", probefunc, pid, ppid, tid);
             }
             \(category.rawValue):::return
-            /pid == \(pid)/
+            /\(predicate)/
             {
-                printf("\(category.rawValue)\\treturn\\t%s\\t%d\\t%d\\n", probefunc, pid, tid);
+                printf("\(category.rawValue)\\treturn\\t%s\\t%d\\t%d\\t%d\\n", probefunc, pid, ppid, tid);
             }
             """
         }.joined(separator: "\n")

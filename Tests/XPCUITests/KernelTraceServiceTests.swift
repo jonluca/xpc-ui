@@ -2,16 +2,17 @@ import XCTest
 @testable import XPC_UI
 
 final class KernelTraceServiceTests: XCTestCase {
-    func testScriptFiltersBothProvidersToTargetPID() {
-        let script = KernelTraceService.script(pid: 42, categories: [.syscall, .machTrap])
+    func testScriptFiltersBothProvidersToTrackedPIDs() {
+        let script = KernelTraceService.script(pids: [42, 84], categories: [.syscall, .machTrap])
         XCTAssertTrue(script.contains("syscall:::entry"))
         XCTAssertTrue(script.contains("mach_trap:::return"))
-        XCTAssertEqual(script.components(separatedBy: "/pid == 42/").count - 1, 4)
+        XCTAssertEqual(script.components(separatedBy: "/pid == 42 || pid == 84/").count - 1, 4)
+        XCTAssertTrue(script.contains("probefunc, pid, ppid, tid"))
     }
 
     func testDecoderCreatesSharedCaptureEnvelope() {
         let event = KernelTraceEventDecoder().decode(
-            line: "syscall\tentry\topen\t42\t7",
+            line: "syscall\tentry\topen\t42\t1\t7",
             sessionID: "test-session"
         )
 
@@ -21,6 +22,7 @@ final class KernelTraceServiceTests: XCTestCase {
         XCTAssertEqual(event?.direction, "entry")
         XCTAssertEqual(event?.operation, "open")
         XCTAssertEqual(event?.pid, 42)
+        XCTAssertEqual(event?.parentPID, 1)
         XCTAssertEqual(event?.threadID, 7)
     }
 

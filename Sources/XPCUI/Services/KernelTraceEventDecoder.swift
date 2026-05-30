@@ -7,9 +7,10 @@ final class KernelTraceEventDecoder: @unchecked Sendable {
     func decode(line: String, sessionID: String) -> CaptureEventEnvelope? {
         let fields = line.split(separator: "\t", omittingEmptySubsequences: false)
         guard
-            fields.count == 5,
+            fields.count == 6,
             let pid = Int32(fields[3]),
-            let threadID = UInt64(fields[4])
+            let parentPID = Int32(fields[4]),
+            let threadID = UInt64(fields[5])
         else {
             return nil
         }
@@ -28,7 +29,7 @@ final class KernelTraceEventDecoder: @unchecked Sendable {
             sequence: nextSequence,
             monotonicTimestamp: DispatchTime.now().uptimeNanoseconds,
             pid: pid,
-            parentPID: 0,
+            parentPID: parentPID,
             threadID: threadID,
             source: "dtrace",
             category: category,

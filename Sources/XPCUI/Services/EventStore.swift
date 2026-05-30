@@ -8,7 +8,7 @@ final class EventStore: ObservableObject {
     @Published var selectedCategory = "all"
     @Published var paused = false
     @Published private(set) var droppedEventCount: UInt64 = 0
-    @Published private(set) var snapshot: ProcessSnapshot?
+    @Published private(set) var snapshot: ProcessTreeSnapshot?
 
     let sessionController: SessionController
 
@@ -90,7 +90,7 @@ final class EventStore: ObservableObject {
         )
     }
 
-    func update(snapshot: ProcessSnapshot) {
+    func update(snapshot: ProcessTreeSnapshot) {
         self.snapshot = snapshot
     }
 

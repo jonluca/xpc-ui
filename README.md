@@ -31,7 +31,9 @@ launching the target.
   Oversized structured payloads are stored as lazy sidecars so the live
   timeline remains responsive without losing export fidelity.
 - `Descendants`: child processes inherit launch-time injection when macOS allows
-  their environment to propagate.
+  their environment to propagate. Resource snapshots follow the live descendant
+  tree, and opt-in kernel deep mode updates its DTrace PID filters as children
+  appear or exit.
 - `Process snapshots`: files, folders, sockets, and Mach port rights when the
   target permits inspection.
 - `Privileged helper`: a signed-client-validated LaunchDaemon snapshot RPC,

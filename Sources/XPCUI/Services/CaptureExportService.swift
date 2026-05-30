@@ -16,7 +16,7 @@ enum CaptureExportService {
     static func write(
         session: TraceSession,
         events: [CaptureEventEnvelope],
-        snapshot: ProcessSnapshot?,
+        snapshot: ProcessTreeSnapshot?,
         droppedEventCount: UInt64,
         targetPID: Int32?,
         targetPath: String?,

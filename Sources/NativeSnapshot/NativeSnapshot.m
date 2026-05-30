@@ -8,6 +8,13 @@
 #import <sys/proc_info.h>
 #import <sys/socket.h>
 
+static char *XPCUICopyJSONString(id object) {
+    NSData *data = [NSJSONSerialization dataWithJSONObject:object options:0 error:nil];
+    char *result = calloc(1, data.length + 1);
+    memcpy(result, data.bytes, data.length);
+    return result;
+}
+
 static NSString *XPCUIIPAddress(const struct in_sockinfo *info, BOOL local) {
     char buffer[INET6_ADDRSTRLEN] = {0};
     const void *address = NULL;
@@ -140,10 +147,82 @@ char *XPCUICopyProcessSnapshotJSON(pid_t pid) {
         if (error) {
             snapshot[@"error"] = error;
         }
-        NSData *data = [NSJSONSerialization dataWithJSONObject:snapshot options:0 error:nil];
-        char *result = calloc(1, data.length + 1);
-        memcpy(result, data.bytes, data.length);
-        return result;
+        return XPCUICopyJSONString(snapshot);
+    }
+}
+
+static NSDictionary *XPCUIProcessIdentity(pid_t pid, pid_t parentPID) {
+    char name[PROC_PIDPATHINFO_MAXSIZE] = {0};
+    char path[PROC_PIDPATHINFO_MAXSIZE] = {0};
+    proc_name(pid, name, sizeof(name));
+    proc_pidpath(pid, path, sizeof(path));
+    return @{
+        @"pid": @(pid),
+        @"parentPID": @(parentPID),
+        @"name": name[0] == '\0' ? @"" : [NSString stringWithUTF8String:name],
+        @"path": path[0] == '\0' ? @"" : [NSString stringWithUTF8String:path],
+    };
+}
+
+static pid_t XPCUIParentPID(pid_t pid) {
+    struct proc_bsdinfo info = {0};
+    int bytes = proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &info, sizeof(info));
+    return bytes == sizeof(info) ? info.pbi_ppid : 0;
+}
+
+char *XPCUICopyProcessTreeJSON(pid_t rootPID) {
+    @autoreleasepool {
+        NSMutableArray<NSNumber *> *pending = [NSMutableArray arrayWithObject:@(rootPID)];
+        NSMutableSet<NSNumber *> *visited = [NSMutableSet set];
+        NSMutableArray *processes = [NSMutableArray array];
+        while (pending.count > 0) {
+            NSNumber *pidNumber = pending.firstObject;
+            [pending removeObjectAtIndex:0];
+            if ([visited containsObject:pidNumber]) {
+                continue;
+            }
+            [visited addObject:pidNumber];
+            pid_t pid = pidNumber.intValue;
+            [processes addObject:XPCUIProcessIdentity(pid, pid == rootPID ? XPCUIParentPID(pid) : 0)];
+
+            int childCount = proc_listchildpids(pid, NULL, 0);
+            if (childCount <= 0) {
+                continue;
+            }
+            pid_t *children = calloc((size_t)childCount, sizeof(pid_t));
+            int listedCount = proc_listchildpids(pid, children, childCount * (int)sizeof(pid_t));
+            for (int index = 0; index < listedCount && index < childCount; index++) {
+                if (children[index] <= 0) {
+                    continue;
+                }
+                NSNumber *childNumber = @(children[index]);
+                if (![visited containsObject:childNumber]) {
+                    [pending addObject:childNumber];
+                }
+            }
+            free(children);
+        }
+
+        NSMutableDictionary<NSNumber *, NSMutableDictionary *> *identities = [NSMutableDictionary dictionary];
+        for (NSDictionary *process in processes) {
+            identities[process[@"pid"]] = [process mutableCopy];
+        }
+        for (NSNumber *parentPID in visited) {
+            int childCount = proc_listchildpids(parentPID.intValue, NULL, 0);
+            if (childCount <= 0) {
+                continue;
+            }
+            pid_t *children = calloc((size_t)childCount, sizeof(pid_t));
+            int listedCount = proc_listchildpids(parentPID.intValue, children, childCount * (int)sizeof(pid_t));
+            for (int index = 0; index < listedCount && index < childCount; index++) {
+                NSMutableDictionary *child = identities[@(children[index])];
+                if (child) {
+                    child[@"parentPID"] = parentPID;
+                }
+            }
+            free(children);
+        }
+        return XPCUICopyJSONString(identities.allValues);
     }
 }
 

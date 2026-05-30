@@ -8,6 +8,7 @@ extern "C" {
 #endif
 
 char *XPCUICopyProcessSnapshotJSON(pid_t pid);
+char *XPCUICopyProcessTreeJSON(pid_t rootPID);
 void XPCUIFreeCString(char *string);
 
 #ifdef __cplusplus
