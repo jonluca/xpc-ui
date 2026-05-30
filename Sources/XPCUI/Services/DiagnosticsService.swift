@@ -1,5 +1,4 @@
 import Foundation
-import Security
 import ServiceManagement
 
 @MainActor
@@ -56,10 +55,10 @@ final class DiagnosticsService: ObservableObject {
                 CapabilityStatus(
                     id: "endpoint-security",
                     title: "Endpoint Security telemetry",
-                    level: Self.hasEndpointSecurityEntitlement ? .available : .unavailable,
-                    detail: Self.hasEndpointSecurityEntitlement
-                        ? "The restricted Endpoint Security client entitlement is present."
-                        : EndpointSecurityAdapter.activationNote
+                    level: EndpointSecurityAdapter.isEmbedded ? .limited : .unavailable,
+                    detail: EndpointSecurityAdapter.isEmbedded
+                        ? "The entitlement-gated system extension is embedded. \(EndpointSecurityAdapter.activationNote)"
+                        : "The Endpoint Security system extension is missing from the app bundle."
                 ),
                 CapabilityStatus(
                     id: "kernel",
@@ -93,20 +92,6 @@ final class DiagnosticsService: ObservableObject {
         } catch {
             return error.localizedDescription
         }
-    }
-
-    private static var hasEndpointSecurityEntitlement: Bool {
-        guard
-            let task = SecTaskCreateFromSelf(nil),
-            let value = SecTaskCopyValueForEntitlement(
-                task,
-                EndpointSecurityAdapter.requiredEntitlement as CFString,
-                nil
-            )
-        else {
-            return false
-        }
-        return value as? Bool == true
     }
 
     private static func level(for status: SMAppService.Status) -> CapabilityStatus.Level {

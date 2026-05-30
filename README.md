@@ -60,8 +60,11 @@ launching the target.
   Observed XPC services stay separate from opaque process-local Mach names.
 - `Privileged helper`: a signed-client-validated LaunchDaemon snapshot RPC,
   registered from **Lab Setup** with admin approval.
-- `Endpoint Security`: an explicit gated adapter until Apple's restricted
-  entitlement is provisioned.
+- `Endpoint Security`: an embedded, entitlement-gated system extension for
+  process lifecycle, file open/close, UNIX-domain socket connects, and named
+  XPC service connects. **Lab Setup** exposes explicit activation controls.
+  Runtime collection still requires Apple's restricted entitlement and Full
+  Disk Access approval.
 - `Kernel deep mode`: filtered `syscall` and `mach_trap` DTrace adapters. When
   the LaunchDaemon is enabled it owns DTrace and streams lines back over a
   private XPC callback endpoint; direct launch remains a reported fallback.

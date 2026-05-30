@@ -159,6 +159,11 @@ private struct CaptureToolbar: View {
                     .fixedSize()
                     .disabled(sessionController.targetPID != nil)
                     .help("Opt in to the replaceable NSXPCConnection lifecycle adapter. This uses Objective-C swizzling and is off by default.")
+                Toggle("ES", isOn: $sessionController.endpointSecurityTelemetryEnabled)
+                    .toggleStyle(.switch)
+                    .fixedSize()
+                    .disabled(sessionController.targetPID != nil)
+                    .help("Opt in to supported Endpoint Security telemetry after activating the entitlement-gated system extension.")
                 Menu("Kernel Filters", systemImage: "line.3.horizontal.decrease.circle") {
                     ForEach(KernelTraceService.Category.allCases) { category in
                         Toggle(category.title, isOn: kernelCategoryBinding(category))
@@ -331,6 +336,7 @@ private struct TargetPreflightView: View {
 
 private struct SetupView: View {
     @StateObject private var diagnostics = DiagnosticsService()
+    @StateObject private var endpointSecurity = EndpointSecurityAdapter.shared
     @State private var errorMessage: String?
 
     var body: some View {
@@ -356,6 +362,12 @@ private struct SetupView: View {
         }
         .navigationTitle("Lab Setup")
         .toolbar {
+            Button("Activate ES") {
+                endpointSecurity.activate()
+            }
+            Button("Deactivate ES") {
+                endpointSecurity.deactivate()
+            }
             Button("Register Helper") {
                 do {
                     try diagnostics.registerHelper()
@@ -366,6 +378,14 @@ private struct SetupView: View {
             Button("Refresh", systemImage: "arrow.clockwise") {
                 diagnostics.refresh()
             }
+        }
+        .safeAreaInset(edge: .bottom) {
+            Text("Endpoint Security: \(endpointSecurity.activationStatus)")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding()
+                .background(.bar)
         }
         .task {
             diagnostics.refresh()

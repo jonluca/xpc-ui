@@ -9,9 +9,11 @@ final class SessionController: ObservableObject {
     @Published private(set) var session: TraceSession?
     @Published var deepCaptureEnabled = true
     @Published var optionalNSXPCLifecycleAdapterEnabled = false
+    @Published var endpointSecurityTelemetryEnabled = false
     @Published var kernelDeepModeEnabled = false
     @Published var selectedKernelCategories = Set(KernelTraceService.Category.allCases)
     @Published private(set) var kernelTraceStatus = "Off"
+    @Published private(set) var endpointSecurityStatus = "Off"
     @Published private(set) var trackedPIDs = Set<Int32>()
 
     weak var store: EventStore?
@@ -28,6 +30,9 @@ final class SessionController: ObservableObject {
         socketServer.stop()
         kernelTraceService.stop()
         CaptureHelperClient.shared.stopKernelTrace()
+        if endpointSecurityTelemetryEnabled {
+            XPCUIEndpointSecurityStop()
+        }
         kernelTraceGeneration += 1
         kernelTracedPIDs.removeAll()
         snapshotTimer?.invalidate()
@@ -36,6 +41,7 @@ final class SessionController: ObservableObject {
         launchedProcess = nil
         status = "Ready"
         kernelTraceStatus = "Off"
+        endpointSecurityStatus = "Off"
         targetPID = nil
         targetPath = nil
         trackedPIDs.removeAll()
@@ -90,6 +96,7 @@ final class SessionController: ObservableObject {
         if kernelDeepModeEnabled {
             updateKernelTrace(pids: [pid], sessionID: nextSession.id)
         }
+        startEndpointSecurity(pids: [pid], session: nextSession)
         refreshProcessTree(rootPID: pid, sessionID: nextSession.id)
         snapshotTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in
@@ -248,7 +255,25 @@ final class SessionController: ObservableObject {
             self.trackedPIDs = snapshot.processIDs
             self.store?.update(snapshot: snapshot)
             self.updateKernelTrace(pids: snapshot.processIDs, sessionID: sessionID)
+            self.updateEndpointSecurity(pids: snapshot.processIDs)
         }
+    }
+
+    private func startEndpointSecurity(pids: Set<Int32>, session: TraceSession) {
+        guard endpointSecurityTelemetryEnabled else { return }
+        XPCUIEndpointSecurityStart(
+            session.id,
+            session.authToken,
+            session.socketURL.path,
+            pids.sorted().map { NSNumber(value: $0) }
+        )
+        endpointSecurityStatus = "Requested for \(pids.count) tracked process\(pids.count == 1 ? "" : "es")"
+    }
+
+    private func updateEndpointSecurity(pids: Set<Int32>) {
+        guard endpointSecurityTelemetryEnabled else { return }
+        XPCUIEndpointSecurityUpdateTrackedPIDs(pids.sorted().map { NSNumber(value: $0) })
+        endpointSecurityStatus = "Tracking \(pids.count) process\(pids.count == 1 ? "" : "es")"
     }
 }
 

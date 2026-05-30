@@ -3,6 +3,10 @@
 
 #include <sys/types.h>
 
+#ifdef __OBJC__
+#import "../EndpointSecurityBridge/EndpointSecurityBridge.h"
+#endif
+
 #ifdef __cplusplus
 extern "C" {
 #endif

@@ -32,11 +32,29 @@ targets:
         PRODUCT_NAME: CaptureHelper
         PRODUCT_BUNDLE_IDENTIFIER: com.jonluca.xpcui.capture-helper
         SWIFT_OBJC_BRIDGING_HEADER: Sources/NativeSnapshot/NativeSnapshot.h
+  EndpointSecurityExtension:
+    type: system-extension
+    platform: macOS
+    sources:
+      - Sources/EndpointSecurityExtension
+    settings:
+      base:
+        CODE_SIGN_ENTITLEMENTS: Sources/EndpointSecurityExtension/EndpointSecurityExtension.entitlements
+        OTHER_LDFLAGS: -lEndpointSecurity -lbsm
+        PRODUCT_BUNDLE_IDENTIFIER: com.jonluca.xpcui.endpoint-security
+        PRODUCT_NAME: com.jonluca.xpcui.endpoint-security
+    info:
+      path: Sources/EndpointSecurityExtension/Info.plist
+      properties:
+        CFBundlePackageType: SYSX
+        NSEndpointSecurityEarlyBoot: false
+        NSEndpointSecurityMachServiceName: com.jonluca.xpcui.endpoint-security
   XPCUI:
     type: application
     platform: macOS
     sources:
       - Sources/XPCUI
+      - Sources/EndpointSecurityBridge
       - Sources/HelperProtocol
       - Sources/NativeSnapshot
     dependencies:
@@ -44,10 +62,13 @@ targets:
         embed: true
         link: false
       - target: CaptureHelper
+      - target: EndpointSecurityExtension
+        embed: true
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.jonluca.xpcui
         PRODUCT_NAME: XPC UI
+        CODE_SIGN_ENTITLEMENTS: Sources/XPCUI/XPCUI.entitlements
         INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.developer-tools
         SWIFT_OBJC_BRIDGING_HEADER: Sources/NativeSnapshot/NativeSnapshot.h
     info:
