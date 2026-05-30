@@ -1,6 +1,6 @@
-#include <Block.h>
 #include <arpa/inet.h>
 #include <dispatch/dispatch.h>
+#include <errno.h>
 #include <mach/mach_time.h>
 #include <pthread.h>
 #include <stdarg.h>
@@ -12,11 +12,13 @@
 #include <string.h>
 #include <sys/socket.h>
 #include <sys/un.h>
+#include <time.h>
 #include <unistd.h>
 #include <uuid/uuid.h>
 #include <xpc/xpc.h>
 
 #define XPCUI_QUEUE_CAPACITY 4096
+#define XPCUI_SERVICE_MAP_CAPACITY 512
 #define XPCUI_MAX_FRAME_SIZE (64 * 1024 * 1024)
 #define XPCUI_MAX_DEPTH 24
 
@@ -42,12 +44,20 @@ static size_t xpcui_queue_tail = 0;
 static size_t xpcui_queue_count = 0;
 static pthread_mutex_t xpcui_queue_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t xpcui_queue_ready = PTHREAD_COND_INITIALIZER;
+static pthread_mutex_t xpcui_service_map_lock = PTHREAD_MUTEX_INITIALIZER;
 static atomic_uint_fast64_t xpcui_sequence = 0;
 static atomic_uint_fast64_t xpcui_dropped = 0;
 static const char *xpcui_session_id = NULL;
 static const char *xpcui_auth_token = NULL;
 static const char *xpcui_socket_path = NULL;
 static bool xpcui_enabled = false;
+
+typedef struct {
+    xpc_connection_t connection;
+    char *name;
+} xpcui_service_map_entry_t;
+
+static xpcui_service_map_entry_t xpcui_service_map[XPCUI_SERVICE_MAP_CAPACITY];
 
 static void xpcui_buffer_reserve(xpcui_buffer_t *buffer, size_t additional) {
     size_t needed = buffer->length + additional + 1;
@@ -236,32 +246,66 @@ static uint64_t xpcui_thread_id(void) {
     return thread_id;
 }
 
-static const char *xpcui_service_name(xpc_connection_t connection) {
-    const char *name = connection ? xpc_connection_get_name(connection) : NULL;
-    return name ? name : "";
+static void xpcui_remember_service_name(xpc_connection_t connection, const char *name) {
+    if (!connection || !name || name[0] == '\0') {
+        return;
+    }
+    pthread_mutex_lock(&xpcui_service_map_lock);
+    size_t replacement = ((uintptr_t)connection >> 4) % XPCUI_SERVICE_MAP_CAPACITY;
+    for (size_t index = 0; index < XPCUI_SERVICE_MAP_CAPACITY; index++) {
+        if (xpcui_service_map[index].connection == connection || !xpcui_service_map[index].connection) {
+            replacement = index;
+            break;
+        }
+    }
+    free(xpcui_service_map[replacement].name);
+    xpcui_service_map[replacement].connection = connection;
+    xpcui_service_map[replacement].name = strdup(name);
+    pthread_mutex_unlock(&xpcui_service_map_lock);
 }
+
+static char *xpcui_copy_service_name(xpc_connection_t connection) {
+    if (connection && pthread_mutex_trylock(&xpcui_service_map_lock) == 0) {
+        for (size_t index = 0; index < XPCUI_SERVICE_MAP_CAPACITY; index++) {
+            if (xpcui_service_map[index].connection == connection) {
+                char *name = strdup(xpcui_service_map[index].name ? xpcui_service_map[index].name : "");
+                pthread_mutex_unlock(&xpcui_service_map_lock);
+                return name;
+            }
+        }
+        pthread_mutex_unlock(&xpcui_service_map_lock);
+    }
+    const char *name = connection ? xpc_connection_get_name(connection) : NULL;
+    return strdup(name ? name : "");
+}
+
+static void xpcui_release_pending(xpcui_pending_event_t *event);
 
 static void xpcui_enqueue(xpc_object_t payload, const char *direction, const char *operation, xpc_connection_t connection) {
     if (!xpcui_enabled) {
         return;
     }
+    xpcui_pending_event_t event = {
+        .payload = payload ? xpc_retain(payload) : NULL,
+        .direction = strdup(direction),
+        .operation = strdup(operation),
+        .service_name = xpcui_copy_service_name(connection),
+        .sequence = atomic_fetch_add_explicit(&xpcui_sequence, 1, memory_order_relaxed) + 1,
+        .timestamp = xpcui_monotonic_nanoseconds(),
+        .thread_id = xpcui_thread_id(),
+    };
     if (pthread_mutex_trylock(&xpcui_queue_lock) != 0) {
+        xpcui_release_pending(&event);
         atomic_fetch_add_explicit(&xpcui_dropped, 1, memory_order_relaxed);
         return;
     }
     if (xpcui_queue_count >= XPCUI_QUEUE_CAPACITY) {
         pthread_mutex_unlock(&xpcui_queue_lock);
+        xpcui_release_pending(&event);
         atomic_fetch_add_explicit(&xpcui_dropped, 1, memory_order_relaxed);
         return;
     }
-    xpcui_pending_event_t *event = &xpcui_queue[xpcui_queue_tail];
-    event->payload = payload ? xpc_retain(payload) : NULL;
-    event->direction = strdup(direction);
-    event->operation = strdup(operation);
-    event->service_name = strdup(xpcui_service_name(connection));
-    event->sequence = atomic_fetch_add_explicit(&xpcui_sequence, 1, memory_order_relaxed) + 1;
-    event->timestamp = xpcui_monotonic_nanoseconds();
-    event->thread_id = xpcui_thread_id();
+    xpcui_queue[xpcui_queue_tail] = event;
     xpcui_queue_tail = (xpcui_queue_tail + 1) % XPCUI_QUEUE_CAPACITY;
     xpcui_queue_count++;
     pthread_cond_signal(&xpcui_queue_ready);
@@ -354,7 +398,14 @@ static char *xpcui_event_json(xpcui_pending_event_t *event, size_t *length) {
 static bool xpcui_dequeue(xpcui_pending_event_t *event) {
     pthread_mutex_lock(&xpcui_queue_lock);
     while (xpcui_queue_count == 0) {
-        pthread_cond_wait(&xpcui_queue_ready, &xpcui_queue_lock);
+        struct timespec deadline = {0};
+        clock_gettime(CLOCK_REALTIME, &deadline);
+        deadline.tv_sec += 1;
+        if (pthread_cond_timedwait(&xpcui_queue_ready, &xpcui_queue_lock, &deadline) == ETIMEDOUT
+            && xpcui_queue_count == 0) {
+            pthread_mutex_unlock(&xpcui_queue_lock);
+            return false;
+        }
     }
     *event = xpcui_queue[xpcui_queue_head];
     xpcui_queue_head = (xpcui_queue_head + 1) % XPCUI_QUEUE_CAPACITY;
@@ -373,18 +424,34 @@ static void xpcui_release_pending(xpcui_pending_event_t *event) {
 static void *xpcui_worker(void *context) {
     (void)context;
     int socket_fd = -1;
+    uint64_t reported_dropped = 0;
     while (true) {
         xpcui_pending_event_t event = {0};
-        xpcui_dequeue(&event);
+        bool has_event = xpcui_dequeue(&event);
+        uint64_t dropped = atomic_load_explicit(&xpcui_dropped, memory_order_relaxed);
+        if (!has_event && dropped <= reported_dropped) {
+            continue;
+        }
+        if (!has_event) {
+            event.direction = strdup("diagnostic");
+            event.operation = strdup("dropped-events");
+            event.service_name = strdup("");
+            event.sequence = atomic_fetch_add_explicit(&xpcui_sequence, 1, memory_order_relaxed) + 1;
+            event.timestamp = xpcui_monotonic_nanoseconds();
+            event.thread_id = xpcui_thread_id();
+        }
         if (socket_fd < 0) {
             socket_fd = xpcui_connect();
         }
         size_t length = 0;
         char *json = xpcui_event_json(&event, &length);
-        if (socket_fd < 0 || !json || !xpcui_write_frame(socket_fd, json, length)) {
+        bool wrote = socket_fd >= 0 && json && xpcui_write_frame(socket_fd, json, length);
+        if (!wrote) {
             atomic_fetch_add_explicit(&xpcui_dropped, 1, memory_order_relaxed);
             if (socket_fd >= 0) close(socket_fd);
             socket_fd = -1;
+        } else {
+            reported_dropped = atomic_load_explicit(&xpcui_dropped, memory_order_relaxed);
         }
         free(json);
         xpcui_release_pending(&event);
@@ -411,23 +478,23 @@ static void xpcui_initialize(void) {
 
 xpc_connection_t xpcui_connection_create(const char *name, dispatch_queue_t queue) {
     xpc_connection_t connection = xpc_connection_create(name, queue);
+    xpcui_remember_service_name(connection, name);
     xpcui_enqueue(NULL, "lifecycle", "connection-create", connection);
     return connection;
 }
 
 xpc_connection_t xpcui_connection_create_mach_service(const char *name, dispatch_queue_t queue, uint64_t flags) {
     xpc_connection_t connection = xpc_connection_create_mach_service(name, queue, flags);
+    xpcui_remember_service_name(connection, name);
     xpcui_enqueue(NULL, "lifecycle", "mach-service-create", connection);
     return connection;
 }
 
 void xpcui_connection_set_event_handler(xpc_connection_t connection, xpc_handler_t handler) {
-    xpc_handler_t copied_handler = Block_copy(handler);
     xpc_connection_set_event_handler(connection, ^(xpc_object_t event) {
         xpcui_enqueue(event, "incoming", "receive", connection);
-        copied_handler(event);
+        handler(event);
     });
-    Block_release(copied_handler);
 }
 
 void xpcui_connection_send_message(xpc_connection_t connection, xpc_object_t message) {
@@ -442,12 +509,10 @@ void xpcui_connection_send_message_with_reply(
     xpc_handler_t handler
 ) {
     xpcui_enqueue(message, "outgoing", "send-with-reply", connection);
-    xpc_handler_t copied_handler = Block_copy(handler);
     xpc_connection_send_message_with_reply(connection, message, reply_queue, ^(xpc_object_t reply) {
         xpcui_enqueue(reply, "incoming", "reply", connection);
-        copied_handler(reply);
+        handler(reply);
     });
-    Block_release(copied_handler);
 }
 
 xpc_object_t xpcui_connection_send_message_with_reply_sync(xpc_connection_t connection, xpc_object_t message) {

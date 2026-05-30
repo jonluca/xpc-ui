@@ -7,14 +7,16 @@ final class CaptureHelperClient: @unchecked Sendable {
 
     func snapshot(pid: Int32) async -> ProcessSnapshot? {
         await withCheckedContinuation { continuation in
-            let connection = NSXPCConnection(
-                machServiceName: "com.jonluca.xpcui.capture-helper",
-                options: .privileged
+            let connection = SendableXPCConnection(
+                NSXPCConnection(
+                    machServiceName: "com.jonluca.xpcui.capture-helper",
+                    options: .privileged
+                )
             )
-            connection.remoteObjectInterface = NSXPCInterface(with: CaptureHelperProtocol.self)
-            connection.resume()
+            connection.value.remoteObjectInterface = NSXPCInterface(with: CaptureHelperProtocol.self)
+            connection.value.resume()
             let completion = CompletionGate<ProcessSnapshot?>(continuation: continuation)
-            let proxy = connection.remoteObjectProxyWithErrorHandler { _ in
+            let proxy = connection.value.remoteObjectProxyWithErrorHandler { _ in
                 connection.invalidate()
                 completion.resume(returning: nil)
             } as? CaptureHelperProtocol
@@ -28,6 +30,18 @@ final class CaptureHelperClient: @unchecked Sendable {
                 completion.resume(returning: nil)
             }
         }
+    }
+}
+
+private final class SendableXPCConnection: @unchecked Sendable {
+    let value: NSXPCConnection
+
+    init(_ value: NSXPCConnection) {
+        self.value = value
+    }
+
+    func invalidate() {
+        value.invalidate()
     }
 }
 

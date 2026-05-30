@@ -1,8 +1,15 @@
+import Darwin
 import SwiftUI
 import XPC
 
 @main
 struct XPCFixtureApp: App {
+    init() {
+        DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(1_500)) {
+            FixtureTraffic.send()
+        }
+    }
+
     var body: some Scene {
         WindowGroup {
             VStack(spacing: 14) {
@@ -18,10 +25,6 @@ struct XPCFixtureApp: App {
             }
             .padding(32)
             .frame(minWidth: 420, minHeight: 240)
-            .task {
-                try? await Task.sleep(for: .milliseconds(500))
-                FixtureTraffic.send()
-            }
         }
     }
 }
@@ -31,6 +34,7 @@ private enum FixtureTraffic {
         let connection = xpc_connection_create("com.jonluca.xpcui.fixture.service", nil)
         xpc_connection_set_event_handler(connection) { _ in }
         xpc_connection_resume(connection)
+        usleep(20_000)
 
         let message = xpc_dictionary_create(nil, nil, 0)
         xpc_dictionary_set_string(message, "kind", "async")
@@ -44,11 +48,13 @@ private enum FixtureTraffic {
             xpc_dictionary_set_data(message, "blob", buffer.baseAddress, buffer.count)
         }
         xpc_connection_send_message_with_reply(connection, message, nil) { _ in }
+        usleep(20_000)
 
         let syncMessage = xpc_dictionary_create(nil, nil, 0)
         xpc_dictionary_set_string(syncMessage, "kind", "sync")
         xpc_dictionary_set_string(syncMessage, "message", "synchronous round trip")
         _ = xpc_connection_send_message_with_reply_sync(connection, syncMessage)
+        usleep(20_000)
 
         let errorMessage = xpc_dictionary_create(nil, nil, 0)
         xpc_dictionary_set_string(errorMessage, "kind", "error")
