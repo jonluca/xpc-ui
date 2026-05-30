@@ -57,6 +57,9 @@ targets:
         NSHumanReadableCopyright: Copyright © 2026 JonLuca DeCaro
     postBuildScripts:
       - name: Bundle Capture Helper
+        outputFiles:
+          - "$(TARGET_BUILD_DIR)/$(CONTENTS_FOLDER_PATH)/Library/LaunchServices/com.jonluca.xpcui.capture-helper"
+          - "$(TARGET_BUILD_DIR)/$(CONTENTS_FOLDER_PATH)/Library/LaunchDaemons/com.jonluca.xpcui.capture-helper.plist"
         script: |
           set -euo pipefail
           helper_dir="$TARGET_BUILD_DIR/$CONTENTS_FOLDER_PATH/Library/LaunchServices"

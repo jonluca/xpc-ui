@@ -139,7 +139,9 @@ struct TraceSession: Sendable {
     let blobsURL: URL
 
     static func create() throws -> TraceSession {
-        let directoryURL = FileManager.default.temporaryDirectory
+        // UNIX-domain socket paths are limited to 104 bytes on macOS. A short,
+        // private root leaves enough room for the random session identifier.
+        let directoryURL = URL(fileURLWithPath: "/tmp", isDirectory: true)
             .appendingPathComponent("XPCUI-\(UUID().uuidString)", isDirectory: true)
         let blobsURL = directoryURL.appendingPathComponent("blobs", isDirectory: true)
         try FileManager.default.createDirectory(

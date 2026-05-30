@@ -15,13 +15,52 @@ xcodegen generate
 xcodebuild -project XPCUI.xcodeproj -scheme XPCUI -configuration Debug build
 ```
 
-## Current capture tiers
+Run `XPC UI.app`, choose **Launch Target**, and select either an `.app` bundle or
+an executable. For a deterministic first capture, select the built fixture:
+
+```text
+.derived/Build/Products/Debug/XPC Fixture.app
+```
+
+The **Kernel** switch is intentionally opt-in and must be enabled before
+launching the target.
+
+## Capture tiers
 
 - `Injected XPC`: decoded low-level `libxpc` send, receive, and reply traffic.
+- `Descendants`: child processes inherit launch-time injection when macOS allows
+  their environment to propagate.
 - `Process snapshots`: files, folders, sockets, and Mach port rights when the
   target permits inspection.
-- `Privileged helper`: scaffolded LaunchDaemon registration and snapshot RPC.
-- `Endpoint Security`: reported as gated until the restricted Apple entitlement
-  is available.
-- `Kernel deep mode`: reported as gated until the helper and reduced-security
-  lab setup are active.
+- `Privileged helper`: a signed-client-validated LaunchDaemon snapshot RPC,
+  registered from **Lab Setup** with admin approval.
+- `Endpoint Security`: an explicit gated adapter until Apple's restricted
+  entitlement is provisioned.
+- `Kernel deep mode`: filtered `syscall` and `mach_trap` DTrace adapters. The
+  timeline reports runtime denial when SIP or privileges prevent capture.
+
+## Export
+
+Live sessions remain transient. **Export** writes a `.xpcapture` bundle with the
+manifest, newline-delimited events, the latest resource snapshot, drop counters,
+and full-fidelity sidecar blobs. Exports intentionally contain sensitive data.
+
+## Verify
+
+```sh
+xcodebuild -project XPCUI.xcodeproj -scheme XPCUI \
+  -configuration Debug -derivedDataPath .derived \
+  -destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO test
+
+xcodebuild -project XPCUI.xcodeproj -target XPCTrace \
+  -configuration Release -derivedDataPath .derived-universal \
+  ONLY_ACTIVE_ARCH=NO ARCHS='arm64 x86_64' build
+lipo -info .derived-universal/Build/Products/Release/XPCTrace.dylib
+```
+
+## Lab limits
+
+SIP-enabled and platform-protected targets still reject some injection, Mach
+inspection, and DTrace probes. Endpoint Security telemetry cannot activate
+without Apple's restricted entitlement. The app reports these blind spots
+instead of implying complete coverage.

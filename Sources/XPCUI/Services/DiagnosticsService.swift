@@ -51,7 +51,7 @@ final class DiagnosticsService: ObservableObject {
                     level: Self.hasEndpointSecurityEntitlement ? .available : .unavailable,
                     detail: Self.hasEndpointSecurityEntitlement
                         ? "The restricted Endpoint Security client entitlement is present."
-                        : "Requires Apple's com.apple.developer.endpoint-security.client entitlement before activation."
+                        : EndpointSecurityAdapter.activationNote
                 ),
                 CapabilityStatus(
                     id: "kernel",
@@ -92,7 +92,7 @@ final class DiagnosticsService: ObservableObject {
             let task = SecTaskCreateFromSelf(nil),
             let value = SecTaskCopyValueForEntitlement(
                 task,
-                "com.apple.developer.endpoint-security.client" as CFString,
+                EndpointSecurityAdapter.requiredEntitlement as CFString,
                 nil
             )
         else {
