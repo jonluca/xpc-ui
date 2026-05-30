@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct ContentView: View {
     @ObservedObject var store: EventStore
@@ -94,6 +95,7 @@ private struct TimelineScreen: View {
 private struct CaptureToolbar: View {
     @ObservedObject var store: EventStore
     @State private var errorMessage: String?
+    @State private var showExportWarning = false
 
     var body: some View {
         HStack(spacing: 10) {
@@ -108,6 +110,10 @@ private struct CaptureToolbar: View {
                 store.sessionController.stop()
             }
             .disabled(store.sessionController.targetPID == nil)
+            Button("Export", systemImage: "square.and.arrow.up") {
+                showExportWarning = true
+            }
+            .disabled(store.sessionController.session == nil)
             Divider()
                 .frame(height: 20)
             Picker("Category", selection: $store.selectedCategory) {
@@ -127,6 +133,16 @@ private struct CaptureToolbar: View {
         } message: {
             Text(errorMessage ?? "")
         }
+        .confirmationDialog(
+            "Export full-fidelity capture?",
+            isPresented: $showExportWarning,
+            titleVisibility: .visible
+        ) {
+            Button("Export Sensitive Payloads") { exportCapture() }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("The .xpcapture bundle contains unredacted XPC payloads and binary blobs.")
+        }
     }
 
     private func selectAndLaunch() {
@@ -144,14 +160,84 @@ private struct CaptureToolbar: View {
             }
         }
     }
+
+    private func exportCapture() {
+        let panel = NSSavePanel()
+        panel.title = "Export Capture"
+        panel.nameFieldStringValue = "Capture.xpcapture"
+        panel.allowedContentTypes = [UTType(filenameExtension: "xpcapture") ?? .package]
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        do {
+            try store.export(to: url)
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
 }
 
 private struct SetupView: View {
+    @StateObject private var diagnostics = DiagnosticsService()
+    @State private var errorMessage: String?
+
     var body: some View {
-        ContentUnavailableView(
-            "Lab setup diagnostics are coming online",
-            systemImage: "wrench.and.screwdriver",
-            description: Text("The next checkpoint wires helper registration, SIP status, and capture capabilities.")
-        )
+        List {
+            Section {
+                Text("Deep inspection is designed for a dedicated lab Mac. Protected targets can still expose blind spots, so every capability is reported explicitly.")
+                    .foregroundStyle(.secondary)
+            }
+            Section("Capture capabilities") {
+                ForEach(diagnostics.capabilities) { capability in
+                    HStack(alignment: .top, spacing: 12) {
+                        Image(systemName: capability.level.icon)
+                            .foregroundStyle(capability.level.color)
+                            .frame(width: 18)
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(capability.title).fontWeight(.medium)
+                            Text(capability.detail).font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
+                    .padding(.vertical, 4)
+                }
+            }
+        }
+        .navigationTitle("Lab Setup")
+        .toolbar {
+            Button("Register Helper") {
+                do {
+                    try diagnostics.registerHelper()
+                } catch {
+                    errorMessage = error.localizedDescription
+                }
+            }
+            Button("Refresh", systemImage: "arrow.clockwise") {
+                diagnostics.refresh()
+            }
+        }
+        .task {
+            diagnostics.refresh()
+        }
+        .alert("Setup action failed", isPresented: .constant(errorMessage != nil)) {
+            Button("OK") { errorMessage = nil }
+        } message: {
+            Text(errorMessage ?? "")
+        }
+    }
+}
+
+private extension CapabilityStatus.Level {
+    var icon: String {
+        switch self {
+        case .available: "checkmark.circle.fill"
+        case .limited: "exclamationmark.triangle.fill"
+        case .unavailable: "xmark.circle.fill"
+        }
+    }
+
+    var color: Color {
+        switch self {
+        case .available: .green
+        case .limited: .orange
+        case .unavailable: .secondary
+        }
     }
 }

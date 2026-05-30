@@ -79,7 +79,7 @@ static NSArray *XPCUIOpenFiles(pid_t pid, NSMutableArray *sockets) {
             struct vnode_fdinfowithpath info = {0};
             int result = proc_pidfdinfo(pid, descriptor.proc_fd, PROC_PIDFDVNODEPATHINFO, &info, sizeof(info));
             if (result == sizeof(info) && info.pvip.vip_path[0] != '\0') {
-                BOOL isDirectory = (info.pfi.fi_status & S_IFMT) == S_IFDIR;
+                BOOL isDirectory = (info.pvip.vip_vi.vi_stat.vst_mode & S_IFMT) == S_IFDIR;
                 [files addObject:@{
                     @"fd": @(descriptor.proc_fd),
                     @"path": [NSString stringWithUTF8String:info.pvip.vip_path],

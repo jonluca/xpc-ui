@@ -1,5 +1,5 @@
 import XCTest
-@testable import XPCUI
+@testable import XPC_UI
 
 final class CaptureEventTests: XCTestCase {
     func testCaptureEventRoundTripsStructuredPayload() throws {

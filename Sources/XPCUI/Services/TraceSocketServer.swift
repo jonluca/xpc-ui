@@ -117,8 +117,8 @@ final class TraceSocketServer: @unchecked Sendable {
 
     private func readFrame(from descriptor: Int32) -> Data? {
         guard let header = readExactly(byteCount: 4, from: descriptor) else { return nil }
-        let length = header.withUnsafeBytes { pointer -> UInt32 in
-            pointer.load(as: UInt32.self).bigEndian
+        let length = header.reduce(UInt32(0)) { partialResult, byte in
+            (partialResult << 8) | UInt32(byte)
         }
         guard length > 0, length <= 64 * 1024 * 1024 else { return nil }
         return readExactly(byteCount: Int(length), from: descriptor)

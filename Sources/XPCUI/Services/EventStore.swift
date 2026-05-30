@@ -13,6 +13,7 @@ final class EventStore: ObservableObject {
     let sessionController: SessionController
 
     private let pending = PendingEvents()
+    private nonisolated let blobStore = BlobStore()
     private var drainTimer: Timer?
     private let decoder = JSONDecoder()
     private let maxRetainedEvents = 200_000
@@ -47,7 +48,8 @@ final class EventStore: ObservableObject {
 
     nonisolated func ingest(frame: Data) {
         do {
-            let event = try JSONDecoder().decode(CaptureEventEnvelope.self, from: frame)
+            var event = try JSONDecoder().decode(CaptureEventEnvelope.self, from: frame)
+            event.payload = blobStore.externalize(event.payload)
             pending.append(event)
         } catch {
             pending.incrementDecodeFailures()
@@ -60,6 +62,28 @@ final class EventStore: ObservableObject {
         droppedEventCount = 0
         snapshot = nil
         pending.reset()
+    }
+
+    func begin(session: TraceSession) {
+        reset()
+        blobStore.configure(blobsURL: session.blobsURL)
+    }
+
+    func export(to destination: URL) throws {
+        guard let session = sessionController.session else {
+            throw CocoaError(.fileNoSuchFile, userInfo: [
+                NSLocalizedDescriptionKey: "Launch a capture session before exporting.",
+            ])
+        }
+        try CaptureExportService.write(
+            session: session,
+            events: events,
+            snapshot: snapshot,
+            droppedEventCount: droppedEventCount,
+            targetPID: sessionController.targetPID,
+            targetPath: sessionController.targetPath,
+            to: destination
+        )
     }
 
     func update(snapshot: ProcessSnapshot) {

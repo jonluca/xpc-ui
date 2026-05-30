@@ -104,6 +104,8 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.jonluca.xpcui.tests
+        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/XPC UI.app/Contents/MacOS/XPC UI"
+        BUNDLE_LOADER: "$(TEST_HOST)"
 schemes:
   XPCUI:
     build:
