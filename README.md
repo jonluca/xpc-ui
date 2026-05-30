@@ -28,6 +28,8 @@ launching the target.
 ## Capture tiers
 
 - `Injected XPC`: decoded low-level `libxpc` send, receive, and reply traffic.
+  Oversized structured payloads are stored as lazy sidecars so the live
+  timeline remains responsive without losing export fidelity.
 - `Descendants`: child processes inherit launch-time injection when macOS allows
   their environment to propagate.
 - `Process snapshots`: files, folders, sockets, and Mach port rights when the

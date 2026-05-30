@@ -56,6 +56,10 @@ final class EventStore: ObservableObject {
         }
     }
 
+    nonisolated func loadLazyPayload(_ value: JSONValue) -> JSONValue? {
+        blobStore.loadLazyPayload(value)
+    }
+
     func reset() {
         events.removeAll(keepingCapacity: true)
         selectedEventID = nil

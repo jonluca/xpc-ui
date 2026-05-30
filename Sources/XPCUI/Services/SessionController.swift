@@ -111,6 +111,7 @@ final class SessionController: ObservableObject {
             "XPCUI_SESSION_ID": session.id,
             "XPCUI_AUTH_TOKEN": session.authToken,
             "XPCUI_SOCKET_PATH": session.socketURL.path,
+            "XPCUI_BLOBS_PATH": session.blobsURL.path,
         ]
         if deepCaptureEnabled {
             guard let traceLibraryURL = Bundle.main.url(forResource: "XPCTrace", withExtension: "dylib") else {

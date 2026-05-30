@@ -1,6 +1,8 @@
 #include <arpa/inet.h>
 #include <dispatch/dispatch.h>
 #include <errno.h>
+#include <fcntl.h>
+#include <limits.h>
 #include <mach/mach_time.h>
 #include <pthread.h>
 #include <stdarg.h>
@@ -20,6 +22,7 @@
 #define XPCUI_QUEUE_CAPACITY 4096
 #define XPCUI_SERVICE_MAP_CAPACITY 512
 #define XPCUI_MAX_FRAME_SIZE (64 * 1024 * 1024)
+#define XPCUI_LAZY_PAYLOAD_THRESHOLD (512 * 1024)
 #define XPCUI_MAX_DEPTH 24
 
 typedef struct {
@@ -50,6 +53,7 @@ static atomic_uint_fast64_t xpcui_dropped = 0;
 static const char *xpcui_session_id = NULL;
 static const char *xpcui_auth_token = NULL;
 static const char *xpcui_socket_path = NULL;
+static const char *xpcui_blobs_path = NULL;
 static bool xpcui_enabled = false;
 
 typedef struct {
@@ -334,6 +338,46 @@ static bool xpcui_write_frame(int socket_fd, const char *bytes, size_t length) {
         && xpcui_write_all(socket_fd, bytes, length);
 }
 
+static bool xpcui_write_payload_sidecar(
+    xpcui_pending_event_t *event,
+    const char *bytes,
+    size_t length,
+    char *filename,
+    size_t filename_capacity
+) {
+    if (!xpcui_blobs_path) {
+        return false;
+    }
+    snprintf(filename, filename_capacity, "payload-%d-%llu.json", getpid(), event->sequence);
+    char path[PATH_MAX] = {0};
+    char temporary_path[PATH_MAX] = {0};
+    if (snprintf(path, sizeof(path), "%s/%s", xpcui_blobs_path, filename) >= (int)sizeof(path)
+        || snprintf(temporary_path, sizeof(temporary_path), "%s.tmp", path) >= (int)sizeof(temporary_path)) {
+        return false;
+    }
+    int file = open(temporary_path, O_CREAT | O_TRUNC | O_WRONLY, 0600);
+    if (file < 0) {
+        return false;
+    }
+    const uint8_t *cursor = (const uint8_t *)bytes;
+    size_t remaining = length;
+    while (remaining > 0) {
+        ssize_t written = write(file, cursor, remaining);
+        if (written <= 0) {
+            close(file);
+            unlink(temporary_path);
+            return false;
+        }
+        cursor += written;
+        remaining -= (size_t)written;
+    }
+    if (close(file) != 0 || rename(temporary_path, path) != 0) {
+        unlink(temporary_path);
+        return false;
+    }
+    return true;
+}
+
 static int xpcui_connect(void) {
     int socket_fd = socket(AF_UNIX, SOCK_STREAM, 0);
     if (socket_fd < 0) {
@@ -360,6 +404,11 @@ static int xpcui_connect(void) {
 }
 
 static char *xpcui_event_json(xpcui_pending_event_t *event, size_t *length) {
+    xpcui_buffer_t payload = {0};
+    xpcui_serialize_object(&payload, event->payload, 0);
+    char sidecar_filename[128] = {0};
+    bool externalized = payload.length > XPCUI_LAZY_PAYLOAD_THRESHOLD
+        && xpcui_write_payload_sidecar(event, payload.data, payload.length, sidecar_filename, sizeof(sidecar_filename));
     xpcui_buffer_t buffer = {0};
     xpcui_buffer_append(&buffer, "{\"schemaVersion\":1,\"sessionID\":");
     xpcui_buffer_append_json_string(&buffer, xpcui_session_id);
@@ -385,12 +434,19 @@ static char *xpcui_event_json(xpcui_pending_event_t *event, size_t *length) {
     xpcui_buffer_append(&buffer, ",\"summary\":");
     xpcui_buffer_append_json_string(&buffer, event->operation);
     xpcui_buffer_append(&buffer, ",\"payload\":");
-    xpcui_serialize_object(&buffer, event->payload, 0);
+    if (externalized) {
+        xpcui_buffer_append_format(&buffer, "{\"type\":\"lazy-json\",\"encoding\":\"json\",\"length\":%zu,\"blobReference\":", payload.length);
+        xpcui_buffer_append_json_string(&buffer, sidecar_filename);
+        xpcui_buffer_append(&buffer, "}");
+    } else {
+        xpcui_buffer_append_bytes(&buffer, payload.data, payload.length);
+    }
     xpcui_buffer_append_format(
         &buffer,
         ",\"diagnostics\":[],\"droppedEventCount\":%llu}",
         atomic_load_explicit(&xpcui_dropped, memory_order_relaxed)
     );
+    free(payload.data);
     *length = buffer.length;
     return buffer.data;
 }
@@ -464,6 +520,7 @@ static void xpcui_initialize(void) {
     xpcui_session_id = getenv("XPCUI_SESSION_ID");
     xpcui_auth_token = getenv("XPCUI_AUTH_TOKEN");
     xpcui_socket_path = getenv("XPCUI_SOCKET_PATH");
+    xpcui_blobs_path = getenv("XPCUI_BLOBS_PATH");
     if (!xpcui_session_id || !xpcui_auth_token || !xpcui_socket_path) {
         return;
     }

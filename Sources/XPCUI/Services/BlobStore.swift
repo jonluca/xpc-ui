@@ -27,6 +27,22 @@ final class BlobStore: @unchecked Sendable {
         }
     }
 
+    func loadLazyPayload(_ value: JSONValue) -> JSONValue? {
+        guard
+            case let .object(fields) = value,
+            fields["type"] == .string("lazy-json"),
+            case let .string(filename)? = fields["blobReference"],
+            URL(fileURLWithPath: filename).lastPathComponent == filename
+        else {
+            return value
+        }
+        lock.lock()
+        let source = blobsURL?.appendingPathComponent(filename)
+        lock.unlock()
+        guard let source, let data = try? Data(contentsOf: source) else { return nil }
+        return try? JSONDecoder().decode(JSONValue.self, from: data)
+    }
+
     private func externalizeDataObject(_ fields: [String: JSONValue]) -> [String: JSONValue]? {
         guard
             fields["type"] == .string("data"),

@@ -90,7 +90,7 @@ private struct TimelineScreen: View {
             HSplitView {
                 TimelineTable(events: store.visibleEvents, selection: $store.selectedEventID)
                     .frame(minWidth: 580)
-                PayloadView(event: store.selectedEvent)
+                PayloadView(event: store.selectedEvent, loadLazyPayload: store.loadLazyPayload)
                     .frame(minWidth: 280, idealWidth: 360)
             }
         }

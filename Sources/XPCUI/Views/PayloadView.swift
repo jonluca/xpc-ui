@@ -2,6 +2,7 @@ import SwiftUI
 
 struct PayloadView: View {
     let event: CaptureEventEnvelope?
+    let loadLazyPayload: @Sendable (JSONValue) -> JSONValue?
 
     var body: some View {
         Group {
@@ -17,7 +18,7 @@ struct PayloadView: View {
                     }
                     if let payload = event.payload {
                         Section("Payload") {
-                            JSONValueView(label: "root", value: payload)
+                            PayloadRootView(value: payload, loadLazyPayload: loadLazyPayload)
                         }
                     }
                     if !event.diagnostics.isEmpty {
@@ -29,6 +30,41 @@ struct PayloadView: View {
             } else {
                 ContentUnavailableView("Select an event", systemImage: "sidebar.right")
             }
+        }
+    }
+}
+
+private struct PayloadRootView: View {
+    let value: JSONValue
+    let loadLazyPayload: @Sendable (JSONValue) -> JSONValue?
+    @State private var loadedValue: JSONValue?
+    @State private var isLoading = false
+
+    var body: some View {
+        if let loadedValue {
+            JSONValueView(label: "root", value: loadedValue)
+        } else if case let .object(fields) = value, fields["type"] == .string("lazy-json") {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Large payload stored as a lazy sidecar.")
+                    .foregroundStyle(.secondary)
+                if case let .number(length)? = fields["length"] {
+                    Text(ByteCountFormatter.string(fromByteCount: Int64(length), countStyle: .file))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Button(isLoading ? "Loading..." : "Load Full Payload") {
+                    isLoading = true
+                    Task {
+                        loadedValue = await Task.detached(priority: .userInitiated) {
+                            loadLazyPayload(value)
+                        }.value
+                        isLoading = false
+                    }
+                }
+                .disabled(isLoading)
+            }
+        } else {
+            JSONValueView(label: "root", value: value)
         }
     }
 }
