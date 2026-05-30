@@ -33,6 +33,9 @@ launching the target.
   timeline remains responsive without losing export fidelity. UI ingestion is
   also bounded and reports its own overflow drops during sustained bursts or a
   long pause.
+- `Optional NSXPC lifecycle`: an explicit launch-time opt-in for replaceable
+  `NSXPCConnection` initializer hooks. This swizzled adapter remains disabled by
+  default so brittle experiments stay separate from the stable public hooks.
 - `Descendants`: child processes inherit launch-time injection when macOS allows
   their environment to propagate. Resource snapshots follow the live descendant
   tree, and opt-in kernel deep mode updates its DTrace PID filters as children

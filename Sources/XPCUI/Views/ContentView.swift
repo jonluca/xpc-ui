@@ -154,6 +154,11 @@ private struct CaptureToolbar: View {
                     .fixedSize()
                     .disabled(sessionController.targetPID != nil)
                     .help("Opt in to filtered DTrace syscall and mach_trap events before launch.")
+                Toggle("NSXPC", isOn: $sessionController.optionalNSXPCLifecycleAdapterEnabled)
+                    .toggleStyle(.switch)
+                    .fixedSize()
+                    .disabled(sessionController.targetPID != nil)
+                    .help("Opt in to the replaceable NSXPCConnection lifecycle adapter. This uses Objective-C swizzling and is off by default.")
                 Menu("Kernel Filters", systemImage: "line.3.horizontal.decrease.circle") {
                     ForEach(KernelTraceService.Category.allCases) { category in
                         Toggle(category.title, isOn: kernelCategoryBinding(category))

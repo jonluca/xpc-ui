@@ -19,6 +19,8 @@
 #include <uuid/uuid.h>
 #include <xpc/xpc.h>
 
+#include "XPCTraceOptionalAdapters.h"
+
 #define XPCUI_QUEUE_CAPACITY 4096
 #define XPCUI_SERVICE_MAP_CAPACITY 512
 #define XPCUI_MAX_FRAME_SIZE (64 * 1024 * 1024)
@@ -329,6 +331,10 @@ static void xpcui_enqueue(xpc_object_t payload, const char *direction, const cha
     xpcui_enqueue_named(payload, direction, operation, connection, fallback_name);
 }
 
+void xpcui_trace_optional_lifecycle(const char *operation, const char *service_name) {
+    xpcui_enqueue_named(NULL, "lifecycle", operation, NULL, service_name);
+}
+
 #if defined(XPC_TYPE_SESSION)
 static void xpcui_enqueue_session(xpc_object_t payload, const char *direction, const char *operation, xpc_session_t session) {
     xpcui_enqueue_named(payload, direction, operation, session, NULL);
@@ -547,6 +553,7 @@ static void xpcui_initialize(void) {
     pthread_t worker;
     if (pthread_create(&worker, NULL, xpcui_worker, NULL) == 0) {
         pthread_detach(worker);
+        xpcui_install_optional_adapters();
     } else {
         xpcui_enabled = false;
     }

@@ -8,6 +8,7 @@ final class SessionController: ObservableObject {
     @Published private(set) var targetPath: String?
     @Published private(set) var session: TraceSession?
     @Published var deepCaptureEnabled = true
+    @Published var optionalNSXPCLifecycleAdapterEnabled = false
     @Published var kernelDeepModeEnabled = false
     @Published var selectedKernelCategories = Set(KernelTraceService.Category.allCases)
     @Published private(set) var kernelTraceStatus = "Off"
@@ -218,8 +219,17 @@ final class SessionController: ObservableObject {
                 ])
             }
             environment["DYLD_INSERT_LIBRARIES"] = traceLibraryURL.path
+            if let optionalAdapters = Self.optionalAdaptersEnvironment(
+                nsxpcLifecycleEnabled: optionalNSXPCLifecycleAdapterEnabled
+            ) {
+                environment["XPCUI_OPTIONAL_ADAPTERS"] = optionalAdapters
+            }
         }
         return environment
+    }
+
+    nonisolated static func optionalAdaptersEnvironment(nsxpcLifecycleEnabled: Bool) -> String? {
+        nsxpcLifecycleEnabled ? "nsxpc-lifecycle" : nil
     }
 
     private func refreshProcessTree(rootPID: Int32, sessionID: String) {

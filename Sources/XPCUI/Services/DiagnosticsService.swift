@@ -32,6 +32,14 @@ final class DiagnosticsService: ObservableObject {
                     detail: Self.detail(for: helperStatus)
                 ),
                 CapabilityStatus(
+                    id: "nsxpc-lifecycle",
+                    title: "Optional NSXPC lifecycle adapter",
+                    level: traceLibraryAvailable ? .limited : .unavailable,
+                    detail: traceLibraryAvailable
+                        ? "A replaceable NSXPCConnection initializer adapter is available as an explicit launch-time opt-in. It uses Objective-C swizzling and remains disabled by default."
+                        : "The optional NSXPCConnection adapter requires the injected XPCTrace dylib."
+                ),
+                CapabilityStatus(
                     id: "sip",
                     title: "System Integrity Protection",
                     level: sipEnabled ? .limited : .available,

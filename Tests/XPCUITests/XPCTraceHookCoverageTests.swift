@@ -1,5 +1,6 @@
 import Foundation
 import XCTest
+@testable import XPC_UI
 
 final class XPCTraceHookCoverageTests: XCTestCase {
     func testPublicSessionHooksRemainInterposed() throws {
@@ -34,6 +35,26 @@ final class XPCTraceHookCoverageTests: XCTestCase {
                 """
             )
         )
+    }
+
+    func testOptionalNSXPCAdapterRequiresExplicitOptIn() {
+        XCTAssertNil(SessionController.optionalAdaptersEnvironment(nsxpcLifecycleEnabled: false))
+        XCTAssertEqual(
+            SessionController.optionalAdaptersEnvironment(nsxpcLifecycleEnabled: true),
+            "nsxpc-lifecycle"
+        )
+    }
+
+    func testOptionalNSXPCAdapterOwnsReplaceableInitializerHooks() throws {
+        let source = try String(
+            contentsOf: repositoryRoot.appendingPathComponent("Sources/XPCTrace/XPCTraceOptionalAdapters.m")
+        )
+
+        XCTAssertTrue(source.contains("xpcui_optional_adapter_t adapters[]"))
+        XCTAssertTrue(source.contains("{\"nsxpc-lifecycle\", xpcui_install_nsxpc_lifecycle_adapter}"))
+        XCTAssertTrue(source.contains("@selector(initWithServiceName:)"))
+        XCTAssertTrue(source.contains("@selector(initWithMachServiceName:options:)"))
+        XCTAssertTrue(source.contains("@selector(initWithListenerEndpoint:)"))
     }
 
     private var repositoryRoot: URL {
