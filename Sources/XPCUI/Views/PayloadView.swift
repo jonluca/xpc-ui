@@ -2,7 +2,7 @@ import SwiftUI
 
 struct PayloadView: View {
     let event: CaptureEventEnvelope?
-    let loadLazyPayload: @Sendable (JSONValue) -> JSONValue?
+    let blobStore: BlobStore
 
     var body: some View {
         Group {
@@ -18,7 +18,7 @@ struct PayloadView: View {
                     }
                     if let payload = event.payload {
                         Section("Payload") {
-                            PayloadRootView(value: payload, loadLazyPayload: loadLazyPayload)
+                            PayloadRootView(value: payload, blobStore: blobStore)
                         }
                     }
                     if !event.diagnostics.isEmpty {
@@ -36,7 +36,7 @@ struct PayloadView: View {
 
 private struct PayloadRootView: View {
     let value: JSONValue
-    let loadLazyPayload: @Sendable (JSONValue) -> JSONValue?
+    let blobStore: BlobStore
     @State private var loadedValue: JSONValue?
     @State private var isLoading = false
 
@@ -56,7 +56,7 @@ private struct PayloadRootView: View {
                     isLoading = true
                     Task {
                         loadedValue = await Task.detached(priority: .userInitiated) {
-                            loadLazyPayload(value)
+                            blobStore.loadLazyPayload(value)
                         }.value
                         isLoading = false
                     }

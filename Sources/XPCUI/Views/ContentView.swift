@@ -108,7 +108,7 @@ private struct TimelineScreen: View {
                     selection: $store.selectedEventID
                 )
                     .frame(minWidth: 580)
-                PayloadView(event: store.selectedEvent, loadLazyPayload: store.lazyPayloadLoader)
+                PayloadView(event: store.selectedEvent, blobStore: store.payloadBlobStore)
                     .frame(minWidth: 280, idealWidth: 360)
             }
         }

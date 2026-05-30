@@ -72,12 +72,7 @@ final class EventStore: ObservableObject {
         }
     }
 
-    nonisolated var lazyPayloadLoader: @Sendable (JSONValue) -> JSONValue? {
-        let blobStore = blobStore
-        return { value in
-            blobStore.loadLazyPayload(value)
-        }
-    }
+    nonisolated var payloadBlobStore: BlobStore { blobStore }
 
     func reset() {
         events.removeAll(keepingCapacity: true)
