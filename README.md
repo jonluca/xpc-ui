@@ -26,6 +26,15 @@ The fixture emits classic connection traffic and public session traffic,
 including async replies, sync replies, nested values, binary data, and an
 intentional no-reply message.
 
+To exercise executable launch and descendant tracking, select:
+
+```text
+.derived/Build/Products/Debug/XPCFixtureCLI
+```
+
+The command-line fixture opens a file, folder, and UNIX socket, emits XPC
+traffic, spawns an inherited child copy, and stays alive briefly for snapshots.
+
 The **Kernel** switch is intentionally opt-in and must be enabled before
 launching the target.
 

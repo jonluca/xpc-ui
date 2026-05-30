@@ -102,6 +102,15 @@ targets:
       properties:
         CFBundleDisplayName: XPC Fixture
         LSMinimumSystemVersion: "14.0"
+  XPCFixtureCLI:
+    type: tool
+    platform: macOS
+    sources:
+      - Sources/XPCFixtureCLI
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.jonluca.xpcui.fixture-cli
+        PRODUCT_NAME: XPCFixtureCLI
   XPCUITests:
     type: bundle.unit-test
     platform: macOS
@@ -120,6 +129,7 @@ schemes:
       targets:
         XPCUI: all
         XPCFixture: all
+        XPCFixtureCLI: all
         XPCUITests: [test]
     test:
       targets:
