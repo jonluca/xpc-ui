@@ -37,6 +37,14 @@ final class XPCTraceHookCoverageTests: XCTestCase {
         )
     }
 
+    func testTracerSnapshotsPayloadBeforeDeferredSerialization() throws {
+        let source = try String(contentsOf: repositoryRoot.appendingPathComponent("Sources/XPCTrace/XPCTrace.c"))
+
+        XCTAssertTrue(source.contains("xpc_object_t snapshot = xpc_copy(payload);"))
+        XCTAssertTrue(source.contains(".payload = xpcui_copy_payload_snapshot(payload, &payload_snapshot_fallback)"))
+        XCTAssertTrue(source.contains("payload-snapshot-fallback"))
+    }
+
     func testOptionalNSXPCAdapterRequiresExplicitOptIn() {
         XCTAssertNil(SessionController.optionalAdaptersEnvironment(nsxpcLifecycleEnabled: false))
         XCTAssertEqual(

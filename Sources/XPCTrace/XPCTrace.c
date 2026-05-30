@@ -35,6 +35,7 @@ typedef struct {
 
 typedef struct {
     xpc_object_t payload;
+    bool payload_snapshot_fallback;
     char *direction;
     char *operation;
     char *service_name;
@@ -286,6 +287,19 @@ static char *xpcui_copy_service_name(const void *endpoint, const char *fallback_
 
 static void xpcui_release_pending(xpcui_pending_event_t *event);
 
+static xpc_object_t xpcui_copy_payload_snapshot(xpc_object_t payload, bool *used_fallback) {
+    *used_fallback = false;
+    if (!payload) {
+        return NULL;
+    }
+    xpc_object_t snapshot = xpc_copy(payload);
+    if (snapshot) {
+        return snapshot;
+    }
+    *used_fallback = true;
+    return xpc_retain(payload);
+}
+
 static void xpcui_enqueue_named(
     xpc_object_t payload,
     const char *direction,
@@ -296,8 +310,10 @@ static void xpcui_enqueue_named(
     if (!xpcui_enabled) {
         return;
     }
+    bool payload_snapshot_fallback = false;
     xpcui_pending_event_t event = {
-        .payload = payload ? xpc_retain(payload) : NULL,
+        .payload = xpcui_copy_payload_snapshot(payload, &payload_snapshot_fallback),
+        .payload_snapshot_fallback = payload_snapshot_fallback,
         .direction = strdup(direction),
         .operation = strdup(operation),
         .service_name = xpcui_copy_service_name(endpoint, fallback_name),
@@ -466,9 +482,14 @@ static char *xpcui_event_json(xpcui_pending_event_t *event, size_t *length) {
     } else {
         xpcui_buffer_append_bytes(&buffer, payload.data, payload.length);
     }
+    if (event->payload_snapshot_fallback) {
+        xpcui_buffer_append(&buffer, ",\"diagnostics\":[\"payload-snapshot-fallback\"]");
+    } else {
+        xpcui_buffer_append(&buffer, ",\"diagnostics\":[]");
+    }
     xpcui_buffer_append_format(
         &buffer,
-        ",\"diagnostics\":[],\"droppedEventCount\":%llu}",
+        ",\"droppedEventCount\":%llu}",
         atomic_load_explicit(&xpcui_dropped, memory_order_relaxed)
     );
     free(payload.data);
