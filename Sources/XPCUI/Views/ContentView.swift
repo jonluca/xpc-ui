@@ -121,6 +121,7 @@ private struct CaptureToolbar: View {
     @ObservedObject var sessionController: SessionController
     @State private var errorMessage: String?
     @State private var showExportWarning = false
+    @State private var pendingPreflight: TargetPreflight?
 
     init(store: EventStore) {
         self.store = store
@@ -189,6 +190,16 @@ private struct CaptureToolbar: View {
         } message: {
             Text("The .xpcapture bundle contains unredacted XPC payloads and binary blobs.")
         }
+        .sheet(item: $pendingPreflight) { preflight in
+            TargetPreflightView(
+                preflight: preflight,
+                onCancel: { pendingPreflight = nil },
+                onLaunch: {
+                    pendingPreflight = nil
+                    launch(preflight: preflight)
+                }
+            )
+        }
     }
 
     private func selectAndLaunch() {
@@ -199,8 +210,14 @@ private struct CaptureToolbar: View {
         panel.allowsMultipleSelection = false
         guard panel.runModal() == .OK, let url = panel.url else { return }
         Task {
+            pendingPreflight = await sessionController.preflight(url: url)
+        }
+    }
+
+    private func launch(preflight: TargetPreflight) {
+        Task {
             do {
-                try await sessionController.launch(url: url)
+                try await sessionController.launch(preflight: preflight)
             } catch {
                 errorMessage = error.localizedDescription
             }
@@ -231,6 +248,56 @@ private struct CaptureToolbar: View {
                 }
             }
         )
+    }
+}
+
+private struct TargetPreflightView: View {
+    let preflight: TargetPreflight
+    let onCancel: () -> Void
+    let onLaunch: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            VStack(alignment: .leading, spacing: 5) {
+                Text("Target Preflight")
+                    .font(.title2.weight(.semibold))
+                Text("\(preflight.targetKind.rawValue): \(preflight.displayName)")
+                    .foregroundStyle(.secondary)
+                Text(preflight.targetURL.path)
+                    .font(.caption.monospaced())
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+            }
+            List(preflight.checks) { check in
+                HStack(alignment: .top, spacing: 12) {
+                    Image(systemName: check.level.icon)
+                        .foregroundStyle(check.level.color)
+                        .frame(width: 18)
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(check.title).fontWeight(.medium)
+                        Text(check.detail)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .padding(.vertical, 4)
+            }
+            .frame(minHeight: 260)
+            HStack {
+                if preflight.hasLimitedCoverage {
+                    Text("Launch is allowed, but reported limitations may reduce capture coverage.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button("Cancel", action: onCancel)
+                Button("Launch Capture", action: onLaunch)
+                    .buttonStyle(.borderedProminent)
+                    .disabled(!preflight.canLaunch)
+            }
+        }
+        .padding(20)
+        .frame(minWidth: 640, minHeight: 430)
     }
 }
 
@@ -284,6 +351,24 @@ private struct SetupView: View {
 }
 
 private extension CapabilityStatus.Level {
+    var icon: String {
+        switch self {
+        case .available: "checkmark.circle.fill"
+        case .limited: "exclamationmark.triangle.fill"
+        case .unavailable: "xmark.circle.fill"
+        }
+    }
+
+    var color: Color {
+        switch self {
+        case .available: .green
+        case .limited: .orange
+        case .unavailable: .secondary
+        }
+    }
+}
+
+private extension TargetPreflight.Check.Level {
     var icon: String {
         switch self {
         case .available: "checkmark.circle.fill"

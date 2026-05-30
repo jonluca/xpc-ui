@@ -41,6 +41,16 @@ final class SessionController: ObservableObject {
     }
 
     func launch(url: URL) async throws {
+        try await launch(preflight: preflight(url: url))
+    }
+
+    func launch(preflight: TargetPreflight) async throws {
+        guard preflight.canLaunch else {
+            throw CocoaError(.executableNotLoadable, userInfo: [
+                NSLocalizedDescriptionKey: "The selected target did not pass launch preflight.",
+            ])
+        }
+        let url = preflight.targetURL
         stop()
         if let session {
             try? FileManager.default.removeItem(at: session.directoryURL)
@@ -53,7 +63,7 @@ final class SessionController: ObservableObject {
         session = nextSession
         status = "Launching \(url.lastPathComponent)"
         targetPath = url.path
-        let environment = try traceEnvironment(for: nextSession)
+        let environment = try traceEnvironment(for: nextSession, injectTracer: preflight.shouldInjectTracer)
 
         let pid: Int32
         if url.pathExtension.lowercased() == "app" {
@@ -85,6 +95,13 @@ final class SessionController: ObservableObject {
                 self?.refreshProcessTree(rootPID: pid, sessionID: nextSession.id)
             }
         }
+    }
+
+    func preflight(url: URL) async -> TargetPreflight {
+        let deepCaptureEnabled = deepCaptureEnabled
+        return await Task.detached(priority: .userInitiated) {
+            TargetPreflightService.inspect(url: url, deepCaptureEnabled: deepCaptureEnabled)
+        }.value
     }
 
     private func updateKernelTrace(pids: Set<Int32>, sessionID: String) {
@@ -187,14 +204,14 @@ final class SessionController: ObservableObject {
         }
     }
 
-    private func traceEnvironment(for session: TraceSession) throws -> [String: String] {
+    private func traceEnvironment(for session: TraceSession, injectTracer: Bool) throws -> [String: String] {
         var environment = [
             "XPCUI_SESSION_ID": session.id,
             "XPCUI_AUTH_TOKEN": session.authToken,
             "XPCUI_SOCKET_PATH": session.socketURL.path,
             "XPCUI_BLOBS_PATH": session.blobsURL.path,
         ]
-        if deepCaptureEnabled {
+        if injectTracer {
             guard let traceLibraryURL = Bundle.main.url(forResource: "XPCTrace", withExtension: "dylib") else {
                 throw CocoaError(.fileNoSuchFile, userInfo: [
                     NSLocalizedDescriptionKey: "The injected XPCTrace dylib is missing from the app bundle.",
