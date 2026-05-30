@@ -368,6 +368,9 @@ private struct SetupView: View {
             Button("Deactivate ES") {
                 endpointSecurity.deactivate()
             }
+            Button("Full Disk Access") {
+                endpointSecurity.openFullDiskAccessSettings()
+            }
             Button("Register Helper") {
                 do {
                     try diagnostics.registerHelper()

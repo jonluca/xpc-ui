@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import SystemExtensions
 
@@ -51,6 +52,13 @@ final class EndpointSecurityAdapter: NSObject, ObservableObject {
         )
         request.delegate = self
         OSSystemExtensionManager.shared.submitRequest(request)
+    }
+
+    func openFullDiskAccessSettings() {
+        guard let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles") else {
+            return
+        }
+        NSWorkspace.shared.open(url)
     }
 }
 

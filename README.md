@@ -62,9 +62,10 @@ launching the target.
   registered from **Lab Setup** with admin approval.
 - `Endpoint Security`: an embedded, entitlement-gated system extension for
   process lifecycle, file open/close, UNIX-domain socket connects, and named
-  XPC service connects. **Lab Setup** exposes explicit activation controls.
-  Runtime collection still requires Apple's restricted entitlement and Full
-  Disk Access approval.
+  XPC service connects. **Lab Setup** exposes explicit activation and Full Disk
+  Access controls. The extension accepts control messages only from the signed
+  XPC UI app. Runtime collection still requires Apple's restricted entitlement
+  and Full Disk Access approval.
 - `Kernel deep mode`: filtered `syscall` and `mach_trap` DTrace adapters. When
   the LaunchDaemon is enabled it owns DTrace and streams lines back over a
   private XPC callback endpoint; direct launch remains a reported fallback.

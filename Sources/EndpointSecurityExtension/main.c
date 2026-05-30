@@ -1,4 +1,5 @@
 #include <EndpointSecurity/EndpointSecurity.h>
+#include <Security/Security.h>
 #include <arpa/inet.h>
 #include <bsm/libbsm.h>
 #include <dispatch/dispatch.h>
@@ -60,6 +61,7 @@ static atomic_uint_fast64_t xpcui_pending_count;
 static int xpcui_writer_socket = -1;
 static char *xpcui_writer_socket_path;
 static char *xpcui_writer_auth_token;
+static bool xpcui_listener_has_native_peer_requirement;
 
 static void xpcui_buffer_reserve(xpcui_buffer_t *buffer, size_t additional) {
     size_t needed = buffer->length + additional + 1;
@@ -473,6 +475,59 @@ static void xpcui_handle_control_message(xpc_object_t message) {
     }
 }
 
+static bool xpcui_peer_has_expected_identifier(xpc_connection_t peer) {
+    pid_t pid = xpc_connection_get_pid(peer);
+    CFNumberRef pid_number = CFNumberCreate(NULL, kCFNumberIntType, &pid);
+    if (!pid_number) return false;
+    const void *keys[] = {kSecGuestAttributePid};
+    const void *values[] = {pid_number};
+    CFDictionaryRef attributes = CFDictionaryCreate(
+        NULL,
+        keys,
+        values,
+        1,
+        &kCFTypeDictionaryKeyCallBacks,
+        &kCFTypeDictionaryValueCallBacks
+    );
+    CFRelease(pid_number);
+    if (!attributes) return false;
+
+    SecCodeRef code = NULL;
+    SecStaticCodeRef static_code = NULL;
+    CFDictionaryRef information = NULL;
+    SecCodeRef own_code = NULL;
+    SecStaticCodeRef own_static_code = NULL;
+    CFDictionaryRef own_information = NULL;
+    bool trusted = false;
+    if (SecCodeCopyGuestWithAttributes(NULL, attributes, kSecCSDefaultFlags, &code) == errSecSuccess
+        && SecCodeCheckValidity(code, kSecCSStrictValidate, NULL) == errSecSuccess
+        && SecCodeCopyStaticCode(code, kSecCSDefaultFlags, &static_code) == errSecSuccess
+        && SecCodeCopySigningInformation(static_code, kSecCSDefaultFlags, &information) == errSecSuccess
+        && SecCodeCopySelf(kSecCSDefaultFlags, &own_code) == errSecSuccess
+        && SecCodeCopyStaticCode(own_code, kSecCSDefaultFlags, &own_static_code) == errSecSuccess
+        && SecCodeCopySigningInformation(own_static_code, kSecCSDefaultFlags, &own_information) == errSecSuccess) {
+        CFStringRef identifier = CFDictionaryGetValue(information, kSecCodeInfoIdentifier);
+        CFStringRef team_identifier = CFDictionaryGetValue(information, kSecCodeInfoTeamIdentifier);
+        CFStringRef own_team_identifier = CFDictionaryGetValue(own_information, kSecCodeInfoTeamIdentifier);
+        trusted = identifier
+            && CFGetTypeID(identifier) == CFStringGetTypeID()
+            && CFStringCompare(identifier, CFSTR("com.jonluca.xpcui"), 0) == kCFCompareEqualTo
+            && team_identifier
+            && CFGetTypeID(team_identifier) == CFStringGetTypeID()
+            && own_team_identifier
+            && CFGetTypeID(own_team_identifier) == CFStringGetTypeID()
+            && CFStringCompare(team_identifier, own_team_identifier, 0) == kCFCompareEqualTo;
+    }
+    if (own_information) CFRelease(own_information);
+    if (own_static_code) CFRelease(own_static_code);
+    if (own_code) CFRelease(own_code);
+    if (information) CFRelease(information);
+    if (static_code) CFRelease(static_code);
+    if (code) CFRelease(code);
+    CFRelease(attributes);
+    return trusted;
+}
+
 int main(void) {
     xpcui_state_queue = dispatch_queue_create("com.jonluca.xpcui.endpoint-security.state", DISPATCH_QUEUE_SERIAL);
     xpcui_writer_queue = dispatch_queue_create("com.jonluca.xpcui.endpoint-security.writer", DISPATCH_QUEUE_SERIAL);
@@ -481,8 +536,18 @@ int main(void) {
         xpcui_state_queue,
         XPC_CONNECTION_MACH_SERVICE_LISTENER
     );
+    if (__builtin_available(macOS 14.4, *)) {
+        if (xpc_connection_set_peer_team_identity_requirement(listener, "com.jonluca.xpcui") != 0) {
+            return EXIT_FAILURE;
+        }
+        xpcui_listener_has_native_peer_requirement = true;
+    }
     xpc_connection_set_event_handler(listener, ^(xpc_object_t peer) {
         if (xpc_get_type(peer) != XPC_TYPE_CONNECTION) return;
+        if (!xpcui_listener_has_native_peer_requirement && !xpcui_peer_has_expected_identifier(peer)) {
+            xpc_connection_cancel(peer);
+            return;
+        }
         xpc_connection_set_event_handler(peer, ^(xpc_object_t message) {
             xpcui_handle_control_message(message);
         });

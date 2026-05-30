@@ -35,6 +35,11 @@ final class EndpointSecurityAdapterTests: XCTestCase {
         XCTAssertTrue(source.contains("XPCUI_ES_MAX_PENDING_EVENTS"))
         XCTAssertTrue(source.contains("xpcui_snapshot_config(event, pid)"))
         XCTAssertTrue(source.contains("xpcui_track_pid(event->child_pid)"))
+        XCTAssertTrue(source.contains("xpc_connection_set_peer_team_identity_requirement"))
+        XCTAssertTrue(source.contains("xpcui_peer_has_expected_identifier(peer)"))
+        XCTAssertTrue(source.contains("SecCodeCopyGuestWithAttributes"))
+        XCTAssertTrue(source.contains("SecCodeCheckValidity"))
+        XCTAssertTrue(source.contains("kSecCodeInfoTeamIdentifier"))
     }
 
     func testAppBridgeSendsSessionAndDescendantConfiguration() throws {
@@ -49,6 +54,17 @@ final class EndpointSecurityAdapterTests: XCTestCase {
         XCTAssertTrue(source.contains("xpc_dictionary_set_string(message, \"socketPath\""))
         XCTAssertTrue(source.contains("@\"update-tracked-pids\""))
         XCTAssertTrue(source.contains("@\"stop\""))
+    }
+
+    func testSetupAdapterExposesFullDiskAccessSettingsLink() throws {
+        let source = try String(
+            contentsOf: repositoryRoot.appendingPathComponent(
+                "Sources/XPCUI/Services/EndpointSecurityAdapter.swift"
+            )
+        )
+
+        XCTAssertTrue(source.contains("Privacy_AllFiles"))
+        XCTAssertTrue(source.contains("NSWorkspace.shared.open(url)"))
     }
 
     private var repositoryRoot: URL {

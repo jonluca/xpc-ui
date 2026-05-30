@@ -40,7 +40,7 @@ targets:
     settings:
       base:
         CODE_SIGN_ENTITLEMENTS: Sources/EndpointSecurityExtension/EndpointSecurityExtension.entitlements
-        OTHER_LDFLAGS: -lEndpointSecurity -lbsm
+        OTHER_LDFLAGS: -lEndpointSecurity -lbsm -framework Security
         PRODUCT_BUNDLE_IDENTIFIER: com.jonluca.xpcui.endpoint-security
         PRODUCT_NAME: com.jonluca.xpcui.endpoint-security
     info:
