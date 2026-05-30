@@ -117,8 +117,10 @@ final class EventStore: ObservableObject {
             events: events,
             snapshot: snapshot,
             droppedEventCount: droppedEventCount,
-            targetPID: sessionController.targetPID,
-            targetPath: sessionController.targetPath,
+            dropCounters: exportDropCounters,
+            capabilityResults: sessionController.exportCapabilityResults,
+            targetPID: sessionController.capturedTargetPID,
+            targetPath: sessionController.capturedTargetPath,
             to: destination
         )
     }
@@ -222,6 +224,24 @@ final class EventStore: ObservableObject {
         if nextProcesses != timelineProcesses {
             timelineProcesses = nextProcesses
         }
+    }
+
+    private var exportDropCounters: CaptureExportService.DropCounters {
+        CaptureExportService.DropCounters(
+            total: droppedEventCount,
+            uiBuffer: appDroppedEventCount,
+            collectors: collectorDropCounts
+                .map {
+                    CaptureExportService.CollectorDropCounter(
+                        source: $0.key.source,
+                        pid: $0.key.pid,
+                        droppedEventCount: $0.value
+                    )
+                }
+                .sorted {
+                    ($0.source, $0.pid) < ($1.source, $1.pid)
+                }
+        )
     }
 }
 

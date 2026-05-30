@@ -74,8 +74,9 @@ launching the target.
 ## Export
 
 Live sessions remain transient. **Export** writes a `.xpcapture` bundle with the
-manifest, newline-delimited events, the latest resource snapshot, drop counters,
-and full-fidelity sidecar blobs. Exports intentionally contain sensitive data.
+manifest, newline-delimited events, the latest resource snapshot, structured
+capability results, aggregate and per-collector drop counters, and full-fidelity
+sidecar blobs. Exports intentionally contain sensitive data.
 
 ## Verify
 

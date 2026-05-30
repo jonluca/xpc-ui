@@ -1,6 +1,25 @@
 import Foundation
 
 enum CaptureExportService {
+    struct CapabilityResult: Codable, Equatable, Sendable {
+        let id: String
+        let title: String
+        let level: String
+        let detail: String
+    }
+
+    struct CollectorDropCounter: Codable, Equatable, Sendable {
+        let source: String
+        let pid: Int32
+        let droppedEventCount: UInt64
+    }
+
+    struct DropCounters: Codable, Equatable, Sendable {
+        let total: UInt64
+        let uiBuffer: UInt64
+        let collectors: [CollectorDropCounter]
+    }
+
     struct Manifest: Codable {
         let schemaVersion: Int
         let sessionID: String
@@ -11,6 +30,8 @@ enum CaptureExportService {
         let targetPath: String?
         let includesFullFidelityPayloads: Bool
         let capabilityNotes: [String]
+        let capabilityResults: [CapabilityResult]?
+        let dropCounters: DropCounters?
     }
 
     static func write(
@@ -18,6 +39,8 @@ enum CaptureExportService {
         events: [CaptureEventEnvelope],
         snapshot: ProcessTreeSnapshot?,
         droppedEventCount: UInt64,
+        dropCounters: DropCounters? = nil,
+        capabilityResults: [CapabilityResult] = [],
         targetPID: Int32?,
         targetPath: String?,
         to destination: URL
@@ -42,7 +65,9 @@ enum CaptureExportService {
             capabilityNotes: [
                 "Payloads are exported without redaction.",
                 "Protected targets may have capability gaps recorded by the app.",
-            ]
+            ],
+            capabilityResults: capabilityResults,
+            dropCounters: dropCounters
         )
         try encoder.encode(manifest).write(
             to: destination.appendingPathComponent("manifest.json"),

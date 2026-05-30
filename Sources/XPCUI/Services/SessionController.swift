@@ -6,6 +6,9 @@ final class SessionController: ObservableObject {
     @Published private(set) var status = "Ready"
     @Published private(set) var targetPID: Int32?
     @Published private(set) var targetPath: String?
+    @Published private(set) var capturedTargetPID: Int32?
+    @Published private(set) var capturedTargetPath: String?
+    @Published private(set) var launchPreflight: TargetPreflight?
     @Published private(set) var session: TraceSession?
     @Published var deepCaptureEnabled = true
     @Published var optionalNSXPCLifecycleAdapterEnabled = false
@@ -59,6 +62,9 @@ final class SessionController: ObservableObject {
         }
         let url = preflight.targetURL
         stop()
+        launchPreflight = preflight
+        capturedTargetPID = nil
+        capturedTargetPath = url.path
         if let session {
             try? FileManager.default.removeItem(at: session.directoryURL)
         }
@@ -91,6 +97,8 @@ final class SessionController: ObservableObject {
             pid = process.processIdentifier
         }
         targetPID = pid
+        capturedTargetPID = pid
+        capturedTargetPath = url.path
         trackedPIDs = [pid]
         status = "Capturing \(url.lastPathComponent)"
         if kernelDeepModeEnabled {
@@ -274,6 +282,42 @@ final class SessionController: ObservableObject {
         guard endpointSecurityTelemetryEnabled else { return }
         XPCUIEndpointSecurityUpdateTrackedPIDs(pids.sorted().map { NSNumber(value: $0) })
         endpointSecurityStatus = "Tracking \(pids.count) process\(pids.count == 1 ? "" : "es")"
+    }
+
+    var exportCapabilityResults: [CaptureExportService.CapabilityResult] {
+        var results = launchPreflight?.checks.map {
+            CaptureExportService.CapabilityResult(
+                id: $0.id,
+                title: $0.title,
+                level: $0.level.rawValue,
+                detail: $0.detail
+            )
+        } ?? []
+        results.append(
+            CaptureExportService.CapabilityResult(
+                id: "endpoint-security",
+                title: "Endpoint Security telemetry",
+                level: endpointSecurityTelemetryEnabled ? "requested" : "disabled",
+                detail: endpointSecurityTelemetryEnabled
+                    ? exportStatus(endpointSecurityStatus, fallback: "Endpoint Security telemetry was requested for this session.")
+                    : "Endpoint Security telemetry was not requested for this session."
+            )
+        )
+        results.append(
+            CaptureExportService.CapabilityResult(
+                id: "kernel-deep-mode",
+                title: "Kernel deep mode",
+                level: kernelDeepModeEnabled ? "requested" : "disabled",
+                detail: kernelDeepModeEnabled
+                    ? exportStatus(kernelTraceStatus, fallback: "Kernel deep mode was requested for this session.")
+                    : "Kernel deep mode was not requested for this session."
+            )
+        )
+        return results
+    }
+
+    private func exportStatus(_ status: String, fallback: String) -> String {
+        status == "Off" ? fallback : status
     }
 }
 

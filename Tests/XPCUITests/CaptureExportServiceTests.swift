@@ -76,7 +76,26 @@ final class CaptureExportServiceTests: XCTestCase {
                     ),
                 ]
             ),
-            droppedEventCount: 0,
+            droppedEventCount: 9,
+            dropCounters: CaptureExportService.DropCounters(
+                total: 9,
+                uiBuffer: 2,
+                collectors: [
+                    CaptureExportService.CollectorDropCounter(
+                        source: "xpc-trace",
+                        pid: 3,
+                        droppedEventCount: 7
+                    ),
+                ]
+            ),
+            capabilityResults: [
+                CaptureExportService.CapabilityResult(
+                    id: "injection",
+                    title: "Injected XPC payload capture",
+                    level: "available",
+                    detail: "The bundled XPCTrace dylib will be injected at launch."
+                ),
+            ],
             targetPID: 3,
             targetPath: "/tmp/example",
             to: export
@@ -88,6 +107,10 @@ final class CaptureExportServiceTests: XCTestCase {
         let manifest = try decoder.decode(CaptureExportService.Manifest.self, from: manifestData)
         XCTAssertEqual(manifest.eventCount, 1)
         XCTAssertTrue(manifest.includesFullFidelityPayloads)
+        XCTAssertEqual(manifest.dropCounters?.total, 9)
+        XCTAssertEqual(manifest.dropCounters?.uiBuffer, 2)
+        XCTAssertEqual(manifest.dropCounters?.collectors.first?.droppedEventCount, 7)
+        XCTAssertEqual(manifest.capabilityResults?.first?.id, "injection")
 
         let lines = try String(
             contentsOf: export.appendingPathComponent("events.ndjson"),
@@ -105,5 +128,28 @@ final class CaptureExportServiceTests: XCTestCase {
         XCTAssertEqual(snapshot.rootPID, 3)
         XCTAssertEqual(snapshot.processes.map(\.pid), [3, 4])
         XCTAssertTrue(FileManager.default.fileExists(atPath: export.appendingPathComponent("blobs").path))
+    }
+
+    func testLegacyManifestWithoutStructuredResultsStillDecodes() throws {
+        let manifest = """
+        {
+          "schemaVersion": 1,
+          "sessionID": "legacy",
+          "exportedAt": "2026-05-30T00:00:00Z",
+          "eventCount": 0,
+          "droppedEventCount": 0,
+          "targetPID": null,
+          "targetPath": null,
+          "includesFullFidelityPayloads": true,
+          "capabilityNotes": []
+        }
+        """
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+
+        let decoded = try decoder.decode(CaptureExportService.Manifest.self, from: Data(manifest.utf8))
+
+        XCTAssertNil(decoded.capabilityResults)
+        XCTAssertNil(decoded.dropCounters)
     }
 }
