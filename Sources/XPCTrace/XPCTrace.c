@@ -57,7 +57,7 @@ static const char *xpcui_blobs_path = NULL;
 static bool xpcui_enabled = false;
 
 typedef struct {
-    xpc_connection_t connection;
+    const void *endpoint;
     char *name;
 } xpcui_service_map_entry_t;
 
@@ -250,28 +250,28 @@ static uint64_t xpcui_thread_id(void) {
     return thread_id;
 }
 
-static void xpcui_remember_service_name(xpc_connection_t connection, const char *name) {
-    if (!connection || !name || name[0] == '\0') {
+static void xpcui_remember_service_name(const void *endpoint, const char *name) {
+    if (!endpoint || !name || name[0] == '\0') {
         return;
     }
     pthread_mutex_lock(&xpcui_service_map_lock);
-    size_t replacement = ((uintptr_t)connection >> 4) % XPCUI_SERVICE_MAP_CAPACITY;
+    size_t replacement = ((uintptr_t)endpoint >> 4) % XPCUI_SERVICE_MAP_CAPACITY;
     for (size_t index = 0; index < XPCUI_SERVICE_MAP_CAPACITY; index++) {
-        if (xpcui_service_map[index].connection == connection || !xpcui_service_map[index].connection) {
+        if (xpcui_service_map[index].endpoint == endpoint || !xpcui_service_map[index].endpoint) {
             replacement = index;
             break;
         }
     }
     free(xpcui_service_map[replacement].name);
-    xpcui_service_map[replacement].connection = connection;
+    xpcui_service_map[replacement].endpoint = endpoint;
     xpcui_service_map[replacement].name = strdup(name);
     pthread_mutex_unlock(&xpcui_service_map_lock);
 }
 
-static char *xpcui_copy_service_name(xpc_connection_t connection) {
-    if (connection && pthread_mutex_trylock(&xpcui_service_map_lock) == 0) {
+static char *xpcui_copy_service_name(const void *endpoint, const char *fallback_name) {
+    if (endpoint && pthread_mutex_trylock(&xpcui_service_map_lock) == 0) {
         for (size_t index = 0; index < XPCUI_SERVICE_MAP_CAPACITY; index++) {
-            if (xpcui_service_map[index].connection == connection) {
+            if (xpcui_service_map[index].endpoint == endpoint) {
                 char *name = strdup(xpcui_service_map[index].name ? xpcui_service_map[index].name : "");
                 pthread_mutex_unlock(&xpcui_service_map_lock);
                 return name;
@@ -279,13 +279,18 @@ static char *xpcui_copy_service_name(xpc_connection_t connection) {
         }
         pthread_mutex_unlock(&xpcui_service_map_lock);
     }
-    const char *name = connection ? xpc_connection_get_name(connection) : NULL;
-    return strdup(name ? name : "");
+    return strdup(fallback_name ? fallback_name : "");
 }
 
 static void xpcui_release_pending(xpcui_pending_event_t *event);
 
-static void xpcui_enqueue(xpc_object_t payload, const char *direction, const char *operation, xpc_connection_t connection) {
+static void xpcui_enqueue_named(
+    xpc_object_t payload,
+    const char *direction,
+    const char *operation,
+    const void *endpoint,
+    const char *fallback_name
+) {
     if (!xpcui_enabled) {
         return;
     }
@@ -293,7 +298,7 @@ static void xpcui_enqueue(xpc_object_t payload, const char *direction, const cha
         .payload = payload ? xpc_retain(payload) : NULL,
         .direction = strdup(direction),
         .operation = strdup(operation),
-        .service_name = xpcui_copy_service_name(connection),
+        .service_name = xpcui_copy_service_name(endpoint, fallback_name),
         .sequence = atomic_fetch_add_explicit(&xpcui_sequence, 1, memory_order_relaxed) + 1,
         .timestamp = xpcui_monotonic_nanoseconds(),
         .thread_id = xpcui_thread_id(),
@@ -315,6 +320,20 @@ static void xpcui_enqueue(xpc_object_t payload, const char *direction, const cha
     pthread_cond_signal(&xpcui_queue_ready);
     pthread_mutex_unlock(&xpcui_queue_lock);
 }
+
+static void xpcui_enqueue(xpc_object_t payload, const char *direction, const char *operation, xpc_connection_t connection) {
+    if (!xpcui_enabled) {
+        return;
+    }
+    const char *fallback_name = connection ? xpc_connection_get_name(connection) : NULL;
+    xpcui_enqueue_named(payload, direction, operation, connection, fallback_name);
+}
+
+#if defined(XPC_TYPE_SESSION)
+static void xpcui_enqueue_session(xpc_object_t payload, const char *direction, const char *operation, xpc_session_t session) {
+    xpcui_enqueue_named(payload, direction, operation, session, NULL);
+}
+#endif
 
 static bool xpcui_write_all(int socket_fd, const void *bytes, size_t length) {
     const uint8_t *cursor = bytes;
@@ -579,6 +598,70 @@ xpc_object_t xpcui_connection_send_message_with_reply_sync(xpc_connection_t conn
     return reply;
 }
 
+#if defined(XPC_TYPE_SESSION)
+xpc_session_t xpcui_session_create_xpc_service(
+    const char *name,
+    dispatch_queue_t target_queue,
+    xpc_session_create_flags_t flags,
+    xpc_rich_error_t *error_out
+) {
+    xpc_session_t session = xpc_session_create_xpc_service(name, target_queue, flags, error_out);
+    xpcui_remember_service_name(session, name);
+    xpcui_enqueue_session(NULL, "lifecycle", "session-xpc-service-create", session);
+    return session;
+}
+
+xpc_session_t xpcui_session_create_mach_service(
+    const char *mach_service,
+    dispatch_queue_t target_queue,
+    xpc_session_create_flags_t flags,
+    xpc_rich_error_t *error_out
+) {
+    xpc_session_t session = xpc_session_create_mach_service(mach_service, target_queue, flags, error_out);
+    xpcui_remember_service_name(session, mach_service);
+    xpcui_enqueue_session(NULL, "lifecycle", "session-mach-service-create", session);
+    return session;
+}
+
+void xpcui_session_set_incoming_message_handler(
+    xpc_session_t session,
+    xpc_session_incoming_message_handler_t handler
+) {
+    xpc_session_set_incoming_message_handler(session, ^(xpc_object_t message) {
+        xpcui_enqueue_session(message, "incoming", "session-receive", session);
+        handler(message);
+    });
+}
+
+xpc_rich_error_t xpcui_session_send_message(xpc_session_t session, xpc_object_t message) {
+    xpcui_enqueue_session(message, "outgoing", "session-send", session);
+    return xpc_session_send_message(session, message);
+}
+
+void xpcui_session_send_message_with_reply_async(
+    xpc_session_t session,
+    xpc_object_t message,
+    xpc_session_reply_handler_t reply_handler
+) {
+    xpcui_enqueue_session(message, "outgoing", "session-send-with-reply", session);
+    xpc_session_send_message_with_reply_async(session, message, ^(xpc_object_t reply, xpc_rich_error_t error) {
+        xpcui_enqueue_session(reply, "incoming", "session-reply", session);
+        reply_handler(reply, error);
+    });
+}
+
+xpc_object_t xpcui_session_send_message_with_reply_sync(
+    xpc_session_t session,
+    xpc_object_t message,
+    xpc_rich_error_t *error_out
+) {
+    xpcui_enqueue_session(message, "outgoing", "session-send-with-reply-sync", session);
+    xpc_object_t reply = xpc_session_send_message_with_reply_sync(session, message, error_out);
+    xpcui_enqueue_session(reply, "incoming", "session-reply-sync", session);
+    return reply;
+}
+#endif
+
 #define XPCUI_INTERPOSE(replacement, replacee) \
     __attribute__((used)) static struct { const void *replacement; const void *replacee; } \
     xpcui_interpose_##replacee __attribute__((section("__DATA,__interpose"))) = { \
@@ -591,3 +674,11 @@ XPCUI_INTERPOSE(xpcui_connection_set_event_handler, xpc_connection_set_event_han
 XPCUI_INTERPOSE(xpcui_connection_send_message, xpc_connection_send_message);
 XPCUI_INTERPOSE(xpcui_connection_send_message_with_reply, xpc_connection_send_message_with_reply);
 XPCUI_INTERPOSE(xpcui_connection_send_message_with_reply_sync, xpc_connection_send_message_with_reply_sync);
+#if defined(XPC_TYPE_SESSION)
+XPCUI_INTERPOSE(xpcui_session_create_xpc_service, xpc_session_create_xpc_service);
+XPCUI_INTERPOSE(xpcui_session_create_mach_service, xpc_session_create_mach_service);
+XPCUI_INTERPOSE(xpcui_session_set_incoming_message_handler, xpc_session_set_incoming_message_handler);
+XPCUI_INTERPOSE(xpcui_session_send_message, xpc_session_send_message);
+XPCUI_INTERPOSE(xpcui_session_send_message_with_reply_async, xpc_session_send_message_with_reply_async);
+XPCUI_INTERPOSE(xpcui_session_send_message_with_reply_sync, xpc_session_send_message_with_reply_sync);
+#endif
