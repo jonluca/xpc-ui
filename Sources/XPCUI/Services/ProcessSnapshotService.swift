@@ -1,7 +1,15 @@
 import Foundation
 
 enum ProcessSnapshotService {
-    static func snapshot(pid: Int32) -> ProcessSnapshot {
+    static func snapshot(pid: Int32) async -> ProcessSnapshot {
+        let directSnapshot = await Task.detached(priority: .utility) {
+            snapshotDirectly(pid: pid)
+        }.value
+        guard directSnapshot.error != nil else { return directSnapshot }
+        return await CaptureHelperClient.shared.snapshot(pid: pid) ?? directSnapshot
+    }
+
+    static func snapshotDirectly(pid: Int32) -> ProcessSnapshot {
         guard let pointer = XPCUICopyProcessSnapshotJSON(pid) else {
             return .unavailable(pid: pid, error: "Native snapshot returned no data")
         }

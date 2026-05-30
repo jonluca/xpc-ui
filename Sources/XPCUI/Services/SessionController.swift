@@ -86,9 +86,7 @@ final class SessionController: ObservableObject {
 
     private func refreshSnapshot(pid: Int32) {
         Task { [weak store] in
-            let snapshot = await Task.detached(priority: .utility) {
-                ProcessSnapshotService.snapshot(pid: pid)
-            }.value
+            let snapshot = await ProcessSnapshotService.snapshot(pid: pid)
             store?.update(snapshot: snapshot)
         }
     }

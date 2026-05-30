@@ -25,16 +25,19 @@ targets:
     platform: macOS
     sources:
       - Sources/CaptureHelper
+      - Sources/HelperProtocol
       - Sources/NativeSnapshot
     settings:
       base:
         PRODUCT_NAME: CaptureHelper
         PRODUCT_BUNDLE_IDENTIFIER: com.jonluca.xpcui.capture-helper
+        SWIFT_OBJC_BRIDGING_HEADER: Sources/NativeSnapshot/NativeSnapshot.h
   XPCUI:
     type: application
     platform: macOS
     sources:
       - Sources/XPCUI
+      - Sources/HelperProtocol
       - Sources/NativeSnapshot
     dependencies:
       - target: XPCTrace
