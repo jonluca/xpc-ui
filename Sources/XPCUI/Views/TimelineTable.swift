@@ -3,6 +3,7 @@ import SwiftUI
 
 struct TimelineTable: NSViewRepresentable {
     let events: [CaptureEventEnvelope]
+    let generation: Int
     @Binding var selection: CaptureEventEnvelope.ID?
 
     func makeCoordinator() -> Coordinator {
@@ -33,9 +34,8 @@ struct TimelineTable: NSViewRepresentable {
     }
 
     func updateNSView(_ scrollView: NSScrollView, context: Context) {
-        context.coordinator.events = events
         context.coordinator.selection = $selection
-        context.coordinator.tableView?.reloadData()
+        context.coordinator.update(events: events, generation: generation)
         if let selection, let row = events.firstIndex(where: { $0.id == selection }) {
             context.coordinator.tableView?.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
         }
@@ -50,11 +50,34 @@ struct TimelineTable: NSViewRepresentable {
 
     final class Coordinator: NSObject, NSTableViewDataSource, NSTableViewDelegate {
         var events: [CaptureEventEnvelope] = []
+        var generation = 0
         var selection: Binding<CaptureEventEnvelope.ID?>
         weak var tableView: NSTableView?
 
         init(selection: Binding<CaptureEventEnvelope.ID?>) {
             self.selection = selection
+        }
+
+        func update(events nextEvents: [CaptureEventEnvelope], generation nextGeneration: Int) {
+            let strategy = TimelineTable.updateStrategy(
+                previousCount: events.count,
+                nextCount: nextEvents.count,
+                previousGeneration: generation,
+                nextGeneration: nextGeneration
+            )
+            events = nextEvents
+            generation = nextGeneration
+            guard let tableView else { return }
+            switch strategy {
+            case .noChanges:
+                break
+            case let .insertRows(rows):
+                tableView.beginUpdates()
+                tableView.insertRows(at: IndexSet(integersIn: rows), withAnimation: [])
+                tableView.endUpdates()
+            case .reload:
+                tableView.reloadData()
+            }
         }
 
         func numberOfRows(in tableView: NSTableView) -> Int {
@@ -99,5 +122,28 @@ struct TimelineTable: NSViewRepresentable {
             }
             selection.wrappedValue = events[row].id
         }
+    }
+}
+
+extension TimelineTable {
+    enum UpdateStrategy: Equatable {
+        case noChanges
+        case insertRows(Range<Int>)
+        case reload
+    }
+
+    static func updateStrategy(
+        previousCount: Int,
+        nextCount: Int,
+        previousGeneration: Int,
+        nextGeneration: Int
+    ) -> UpdateStrategy {
+        guard previousGeneration == nextGeneration, nextCount >= previousCount else {
+            return .reload
+        }
+        guard nextCount > previousCount else {
+            return .noChanges
+        }
+        return .insertRows(previousCount ..< nextCount)
     }
 }

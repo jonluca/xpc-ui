@@ -29,7 +29,9 @@ launching the target.
 
 - `Injected XPC`: decoded low-level `libxpc` send, receive, and reply traffic.
   Oversized structured payloads are stored as lazy sidecars so the live
-  timeline remains responsive without losing export fidelity.
+  timeline remains responsive without losing export fidelity. UI ingestion is
+  also bounded and reports its own overflow drops during sustained bursts or a
+  long pause.
 - `Descendants`: child processes inherit launch-time injection when macOS allows
   their environment to propagate. Resource snapshots follow the live descendant
   tree, and opt-in kernel deep mode updates its DTrace PID filters as children

@@ -77,6 +77,11 @@ private struct SidebarStatus: View {
                 Text("\(store.droppedEventCount.formatted()) dropped")
                     .font(.caption)
                     .foregroundStyle(.orange)
+                if store.appDroppedEventCount > 0 {
+                    Text("\(store.appDroppedEventCount.formatted()) dropped by UI buffer")
+                        .font(.caption2)
+                        .foregroundStyle(.orange)
+                }
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -93,9 +98,13 @@ private struct TimelineScreen: View {
             CaptureToolbar(store: store)
             Divider()
             HSplitView {
-                TimelineTable(events: store.visibleEvents, selection: $store.selectedEventID)
+                TimelineTable(
+                    events: store.visibleEvents,
+                    generation: store.timelineGeneration,
+                    selection: $store.selectedEventID
+                )
                     .frame(minWidth: 580)
-                PayloadView(event: store.selectedEvent, loadLazyPayload: store.loadLazyPayload)
+                PayloadView(event: store.selectedEvent, loadLazyPayload: store.lazyPayloadLoader)
                     .frame(minWidth: 280, idealWidth: 360)
             }
         }
