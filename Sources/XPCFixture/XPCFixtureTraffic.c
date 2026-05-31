@@ -4,6 +4,7 @@
 #include <xpc/xpc.h>
 
 static const char *xpcui_fixture_service_name = "com.jonluca.xpcui.fixture.service";
+static const char *xpcui_fixture_missing_service_name = "com.jonluca.xpcui.fixture.missing";
 
 static xpc_object_t xpcui_fixture_message(const char *kind, const char *message) {
     xpc_object_t payload = xpc_dictionary_create(NULL, NULL, 0);
@@ -50,4 +51,22 @@ void xpcui_fixture_send_session_traffic(void) {
     usleep(20000);
     xpc_session_cancel(session);
     xpc_release(session);
+
+    xpc_rich_error_t missing_service_error = NULL;
+    xpc_session_t missing_service = xpc_session_create_mach_service(
+        xpcui_fixture_missing_service_name,
+        NULL,
+        XPC_SESSION_CREATE_NONE,
+        &missing_service_error
+    );
+    if (missing_service_error) xpc_release(missing_service_error);
+    if (!missing_service) {
+        return;
+    }
+    xpc_object_t missing_service_message = xpcui_fixture_message("missing-service", NULL);
+    xpc_rich_error_t missing_service_send_error = xpc_session_send_message(missing_service, missing_service_message);
+    if (missing_service_send_error) xpc_release(missing_service_send_error);
+    xpc_release(missing_service_message);
+    xpc_session_cancel(missing_service);
+    xpc_release(missing_service);
 }

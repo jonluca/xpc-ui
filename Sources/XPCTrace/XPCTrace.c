@@ -230,6 +230,18 @@ static void xpcui_serialize_object(xpcui_buffer_t *buffer, xpc_object_t object, 
         xpcui_serialize_description(buffer, object, "fd");
     } else if (type == XPC_TYPE_ERROR) {
         xpcui_serialize_description(buffer, object, "error");
+#if defined(XPC_TYPE_RICH_ERROR)
+    } else if (type == XPC_TYPE_RICH_ERROR) {
+        char *description = xpc_rich_error_copy_description((xpc_rich_error_t)object);
+        xpcui_buffer_append_format(
+            buffer,
+            "{\"type\":\"rich-error\",\"canRetry\":%s,\"description\":",
+            xpc_rich_error_can_retry((xpc_rich_error_t)object) ? "true" : "false"
+        );
+        xpcui_buffer_append_json_string(buffer, description ? description : "");
+        xpcui_buffer_append(buffer, "}");
+        free(description);
+#endif
     } else if (type == XPC_TYPE_CONNECTION) {
         xpcui_serialize_description(buffer, object, "connection");
     } else if (type == XPC_TYPE_ENDPOINT) {
@@ -354,6 +366,17 @@ void xpcui_trace_optional_lifecycle(const char *operation, const char *service_n
 #if defined(XPC_TYPE_SESSION)
 static void xpcui_enqueue_session(xpc_object_t payload, const char *direction, const char *operation, xpc_session_t session) {
     xpcui_enqueue_named(payload, direction, operation, session, NULL);
+}
+
+static void xpcui_enqueue_session_error(
+    xpc_rich_error_t error,
+    const char *operation,
+    xpc_session_t session,
+    const char *fallback_name
+) {
+    if (error) {
+        xpcui_enqueue_named((xpc_object_t)error, "incoming", operation, session, fallback_name);
+    }
 }
 #endif
 
@@ -635,7 +658,8 @@ xpc_session_t xpcui_session_create_xpc_service(
 ) {
     xpc_session_t session = xpc_session_create_xpc_service(name, target_queue, flags, error_out);
     xpcui_remember_service_name(session, name);
-    xpcui_enqueue_session(NULL, "lifecycle", "session-xpc-service-create", session);
+    xpcui_enqueue_named(NULL, "lifecycle", "session-xpc-service-create", session, name);
+    if (error_out) xpcui_enqueue_session_error(*error_out, "session-create-error", session, name);
     return session;
 }
 
@@ -647,7 +671,8 @@ xpc_session_t xpcui_session_create_mach_service(
 ) {
     xpc_session_t session = xpc_session_create_mach_service(mach_service, target_queue, flags, error_out);
     xpcui_remember_service_name(session, mach_service);
-    xpcui_enqueue_session(NULL, "lifecycle", "session-mach-service-create", session);
+    xpcui_enqueue_named(NULL, "lifecycle", "session-mach-service-create", session, mach_service);
+    if (error_out) xpcui_enqueue_session_error(*error_out, "session-create-error", session, mach_service);
     return session;
 }
 
@@ -663,7 +688,9 @@ void xpcui_session_set_incoming_message_handler(
 
 xpc_rich_error_t xpcui_session_send_message(xpc_session_t session, xpc_object_t message) {
     xpcui_enqueue_session(message, "outgoing", "session-send", session);
-    return xpc_session_send_message(session, message);
+    xpc_rich_error_t error = xpc_session_send_message(session, message);
+    xpcui_enqueue_session_error(error, "session-send-error", session, NULL);
+    return error;
 }
 
 void xpcui_session_send_message_with_reply_async(
@@ -673,7 +700,8 @@ void xpcui_session_send_message_with_reply_async(
 ) {
     xpcui_enqueue_session(message, "outgoing", "session-send-with-reply", session);
     xpc_session_send_message_with_reply_async(session, message, ^(xpc_object_t reply, xpc_rich_error_t error) {
-        xpcui_enqueue_session(reply, "incoming", "session-reply", session);
+        if (reply) xpcui_enqueue_session(reply, "incoming", "session-reply", session);
+        xpcui_enqueue_session_error(error, "session-reply-error", session, NULL);
         reply_handler(reply, error);
     });
 }
@@ -685,7 +713,8 @@ xpc_object_t xpcui_session_send_message_with_reply_sync(
 ) {
     xpcui_enqueue_session(message, "outgoing", "session-send-with-reply-sync", session);
     xpc_object_t reply = xpc_session_send_message_with_reply_sync(session, message, error_out);
-    xpcui_enqueue_session(reply, "incoming", "session-reply-sync", session);
+    if (reply) xpcui_enqueue_session(reply, "incoming", "session-reply-sync", session);
+    if (error_out) xpcui_enqueue_session_error(*error_out, "session-reply-sync-error", session, NULL);
     return reply;
 }
 #endif

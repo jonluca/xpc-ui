@@ -75,6 +75,19 @@ final class XPCTraceHookCoverageTests: XCTestCase {
         XCTAssertTrue(source.contains("xpc_session_send_message_with_reply_sync("))
         XCTAssertTrue(source.contains("xpc_session_send_message("))
         XCTAssertTrue(source.contains("xpc_session_cancel("))
+        XCTAssertTrue(source.contains("xpcui_fixture_missing_service_name"))
+        XCTAssertTrue(source.contains("xpc_session_create_mach_service("))
+    }
+
+    func testPublicSessionHooksEmitStructuredRichErrors() throws {
+        let source = try String(contentsOf: repositoryRoot.appendingPathComponent("Sources/XPCTrace/XPCTrace.c"))
+
+        XCTAssertTrue(source.contains("XPC_TYPE_RICH_ERROR"))
+        XCTAssertTrue(source.contains("\"{\\\"type\\\":\\\"rich-error\\\",\\\"canRetry\\\":%s,\\\"description\\\":\""))
+        XCTAssertTrue(source.contains("\"session-create-error\""))
+        XCTAssertTrue(source.contains("\"session-send-error\""))
+        XCTAssertTrue(source.contains("\"session-reply-error\""))
+        XCTAssertTrue(source.contains("\"session-reply-sync-error\""))
     }
 
     private var repositoryRoot: URL {
