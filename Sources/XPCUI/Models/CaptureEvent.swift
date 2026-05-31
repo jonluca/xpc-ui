@@ -20,7 +20,82 @@ struct CaptureEventEnvelope: Codable, Hashable, Identifiable, Sendable {
     var diagnostics: [String]
     var droppedEventCount: UInt64
 
-    var id: String { "\(sessionID):\(source):\(sequence)" }
+    private enum CodingKeys: String, CodingKey {
+        case schemaVersion
+        case sessionID
+        case sequence
+        case monotonicTimestamp
+        case pid
+        case parentPID
+        case threadID
+        case source
+        case category
+        case direction
+        case operation
+        case serviceName
+        case summary
+        case payload
+        case diagnostics
+        case droppedEventCount
+    }
+
+    init(
+        schemaVersion: Int,
+        sessionID: String,
+        sequence: UInt64,
+        monotonicTimestamp: UInt64,
+        pid: Int32,
+        parentPID: Int32,
+        threadID: UInt64,
+        source: String,
+        category: String,
+        direction: String,
+        operation: String,
+        serviceName: String?,
+        summary: String,
+        payload: JSONValue?,
+        diagnostics: [String],
+        droppedEventCount: UInt64
+    ) {
+        self.schemaVersion = schemaVersion
+        self.sessionID = sessionID
+        self.sequence = sequence
+        self.monotonicTimestamp = monotonicTimestamp
+        self.pid = pid
+        self.parentPID = parentPID
+        self.threadID = threadID
+        self.source = source
+        self.category = category
+        self.direction = direction
+        self.operation = operation
+        self.serviceName = serviceName
+        self.summary = summary
+        self.payload = payload
+        self.diagnostics = diagnostics
+        self.droppedEventCount = droppedEventCount
+    }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        schemaVersion = try values.decodeIfPresent(Int.self, forKey: .schemaVersion) ?? 1
+        sessionID = try values.decode(String.self, forKey: .sessionID)
+        sequence = try values.decode(UInt64.self, forKey: .sequence)
+        monotonicTimestamp = try values.decode(UInt64.self, forKey: .monotonicTimestamp)
+        pid = try values.decode(Int32.self, forKey: .pid)
+        parentPID = try values.decode(Int32.self, forKey: .parentPID)
+        threadID = try values.decode(UInt64.self, forKey: .threadID)
+        source = try values.decode(String.self, forKey: .source)
+        category = try values.decode(String.self, forKey: .category)
+        direction = try values.decode(String.self, forKey: .direction)
+        operation = try values.decode(String.self, forKey: .operation)
+        serviceName = try values.decodeIfPresent(String.self, forKey: .serviceName)
+        summary = try values.decode(String.self, forKey: .summary)
+        payload = try values.decodeIfPresent(JSONValue.self, forKey: .payload)
+        diagnostics = try values.decodeIfPresent([String].self, forKey: .diagnostics) ?? []
+        droppedEventCount = try values.decodeIfPresent(UInt64.self, forKey: .droppedEventCount) ?? 0
+    }
+
+    var id: String { "\(sessionID):\(source):\(pid):\(sequence)" }
 
     var timestampText: String {
         let seconds = Double(monotonicTimestamp) / 1_000_000_000
