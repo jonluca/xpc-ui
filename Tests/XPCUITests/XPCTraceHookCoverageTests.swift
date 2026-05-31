@@ -45,6 +45,15 @@ final class XPCTraceHookCoverageTests: XCTestCase {
         XCTAssertTrue(source.contains("payload-snapshot-fallback"))
     }
 
+    func testTracerUsesBoundedNonblockingHookQueue() throws {
+        let source = try String(contentsOf: repositoryRoot.appendingPathComponent("Sources/XPCTrace/XPCTrace.c"))
+
+        XCTAssertTrue(source.contains("#define XPCUI_QUEUE_CAPACITY 4096"))
+        XCTAssertTrue(source.contains("pthread_mutex_trylock(&xpcui_queue_lock)"))
+        XCTAssertTrue(source.contains("if (xpcui_queue_count >= XPCUI_QUEUE_CAPACITY)"))
+        XCTAssertTrue(source.contains("atomic_fetch_add_explicit(&xpcui_dropped, 1"))
+    }
+
     func testOptionalNSXPCAdapterRequiresExplicitOptIn() {
         XCTAssertNil(SessionController.optionalAdaptersEnvironment(nsxpcLifecycleEnabled: false))
         XCTAssertEqual(

@@ -1,19 +1,80 @@
 #include <dispatch/dispatch.h>
+#include <dlfcn.h>
 #include <fcntl.h>
 #include <spawn.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <sys/wait.h>
+#include <time.h>
 #include <unistd.h>
 #include <xpc/xpc.h>
 
 extern char **environ;
 
 static const char *xpcui_fixture_cli_service = "com.apple.cfprefsd.agent";
+typedef void (*xpcui_trace_lifecycle_fn)(const char *operation, const char *service_name);
+
+static uint64_t xpcui_nanoseconds(struct timespec time) {
+    return (uint64_t)time.tv_sec * 1000000000ULL + (uint64_t)time.tv_nsec;
+}
+
+static int xpcui_run_lifecycle_stress(int argc, char **argv) {
+    if (argc != 4) {
+        fprintf(stderr, "usage: %s --stress-lifecycle events-per-second duration-seconds\n", argv[0]);
+        return 64;
+    }
+    char *rate_end = NULL;
+    char *duration_end = NULL;
+    uint64_t rate = strtoull(argv[2], &rate_end, 10);
+    uint64_t duration = strtoull(argv[3], &duration_end, 10);
+    if (!rate_end || rate_end[0] != '\0' || !duration_end || duration_end[0] != '\0'
+        || rate == 0 || duration == 0) {
+        fprintf(stderr, "stress rate and duration must be positive integers\n");
+        return 64;
+    }
+    xpcui_trace_lifecycle_fn trace_lifecycle = (xpcui_trace_lifecycle_fn)dlsym(
+        RTLD_DEFAULT,
+        "xpcui_trace_optional_lifecycle"
+    );
+    if (!trace_lifecycle) {
+        fprintf(stderr, "XPCTrace.dylib is not injected\n");
+        return 69;
+    }
+
+    struct timespec started = {0};
+    clock_gettime(CLOCK_MONOTONIC, &started);
+    for (uint64_t second = 0; second < duration; second++) {
+        struct timespec interval_started = {0};
+        clock_gettime(CLOCK_MONOTONIC, &interval_started);
+        for (uint64_t event = 0; event < rate; event++) {
+            trace_lifecycle("stress-lifecycle", "com.jonluca.xpcui.fixture.stress");
+        }
+        struct timespec interval_finished = {0};
+        clock_gettime(CLOCK_MONOTONIC, &interval_finished);
+        uint64_t elapsed = xpcui_nanoseconds(interval_finished) - xpcui_nanoseconds(interval_started);
+        if (elapsed < 1000000000ULL) {
+            uint64_t remaining = 1000000000ULL - elapsed;
+            struct timespec sleep_time = {
+                .tv_sec = (time_t)(remaining / 1000000000ULL),
+                .tv_nsec = (long)(remaining % 1000000000ULL),
+            };
+            nanosleep(&sleep_time, NULL);
+        }
+    }
+    struct timespec finished = {0};
+    clock_gettime(CLOCK_MONOTONIC, &finished);
+    printf(
+        "{\"submittedEvents\":%llu,\"elapsedNanoseconds\":%llu}\n",
+        rate * duration,
+        xpcui_nanoseconds(finished) - xpcui_nanoseconds(started)
+    );
+    return 0;
+}
 
 static int xpcui_open_file(const char *role, char *path, size_t capacity) {
     snprintf(path, capacity, "/tmp/XPCFixtureCLI-%d-%s.log", getpid(), role);
@@ -93,6 +154,9 @@ static pid_t xpcui_spawn_child(const char *executable) {
 }
 
 int main(int argc, char **argv) {
+    if (argc > 1 && strcmp(argv[1], "--stress-lifecycle") == 0) {
+        return xpcui_run_lifecycle_stress(argc, argv);
+    }
     bool is_child = argc > 1 && strcmp(argv[1], "--child") == 0;
     const char *role = is_child ? "child" : "parent";
     char file_path[128] = {0};

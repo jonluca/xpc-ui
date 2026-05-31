@@ -91,6 +91,8 @@ xcodebuild -project XPCUI.xcodeproj -scheme XPCUI \
   -configuration Release -derivedDataPath .derived-universal \
   ONLY_ACTIVE_ARCH=NO ARCHS='arm64 x86_64' build
 lipo -info .derived-universal/Build/Products/Release/XPCTrace.dylib
+
+python3 Scripts/stress_tracer.py
 ```
 
 ## Lab limits

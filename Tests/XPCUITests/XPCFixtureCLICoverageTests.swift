@@ -14,6 +14,8 @@ final class XPCFixtureCLICoverageTests: XCTestCase {
         XCTAssertTrue(source.contains("open(\"/tmp\", O_RDONLY)"))
         XCTAssertTrue(source.contains("socket(AF_UNIX, SOCK_STREAM, 0)"))
         XCTAssertTrue(source.contains("xpc_connection_send_message_with_reply("))
+        XCTAssertTrue(source.contains("--stress-lifecycle"))
+        XCTAssertTrue(source.contains("xpcui_trace_optional_lifecycle"))
     }
 
     private var repositoryRoot: URL {
