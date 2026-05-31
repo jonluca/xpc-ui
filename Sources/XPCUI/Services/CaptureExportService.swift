@@ -8,7 +8,7 @@ enum CaptureExportService {
         let detail: String
     }
 
-    struct CollectorDropCounter: Codable, Equatable, Sendable {
+    struct CollectorDropCounter: Codable, Equatable, Hashable, Sendable {
         let source: String
         let pid: Int32
         let droppedEventCount: UInt64
@@ -21,7 +21,7 @@ enum CaptureExportService {
         let collectors: [CollectorDropCounter]
     }
 
-    struct Manifest: Codable {
+    struct Manifest: Codable, Sendable {
         let schemaVersion: Int
         let sessionID: String
         let exportedAt: Date
@@ -30,6 +30,7 @@ enum CaptureExportService {
         let targetPID: Int32?
         let targetPath: String?
         let includesFullFidelityPayloads: Bool
+        let includesInterceptionRules: Bool?
         let capabilityNotes: [String]
         let capabilityResults: [CapabilityResult]?
         let dropCounters: DropCounters?
@@ -79,6 +80,8 @@ enum CaptureExportService {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         encoder.dateEncodingStrategy = .iso8601
+        let sessionRulesURL = session.directoryURL.appendingPathComponent("interception-rules.plist")
+        let includesInterceptionRules = manager.fileExists(atPath: sessionRulesURL.path)
         let manifest = Manifest(
             schemaVersion: CaptureEventEnvelope.currentSchemaVersion,
             sessionID: session.id,
@@ -88,9 +91,11 @@ enum CaptureExportService {
             targetPID: targetPID,
             targetPath: targetPath,
             includesFullFidelityPayloads: true,
+            includesInterceptionRules: includesInterceptionRules,
             capabilityNotes: [
                 "Payloads are exported without redaction.",
                 "Protected targets may have capability gaps recorded by the app.",
+                "Any exported interception rules are unredacted and may describe active message mutations.",
             ],
             capabilityResults: capabilityResults,
             dropCounters: resolvedDropCounters
@@ -110,6 +115,12 @@ enum CaptureExportService {
             try manager.copyItem(at: session.blobsURL, to: exportedBlobsURL)
         } else {
             try manager.createDirectory(at: exportedBlobsURL, withIntermediateDirectories: true)
+        }
+        if includesInterceptionRules {
+            try manager.copyItem(
+                at: sessionRulesURL,
+                to: destination.appendingPathComponent("interception-rules.plist")
+            )
         }
     }
 }

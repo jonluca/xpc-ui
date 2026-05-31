@@ -1,6 +1,10 @@
 import Foundation
 
 final class KernelTraceService: @unchecked Sendable {
+    static var isAvailable: Bool {
+        FileManager.default.isExecutableFile(atPath: "/usr/sbin/dtrace")
+    }
+
     enum Category: String, CaseIterable, Identifiable, Sendable {
         case syscall
         case machTrap = "mach_trap"

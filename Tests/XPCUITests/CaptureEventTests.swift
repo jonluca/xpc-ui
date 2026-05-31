@@ -64,6 +64,28 @@ final class CaptureEventTests: XCTestCase {
         XCTAssertNotEqual(parent.id, child.id)
     }
 
+    func testAppliedInterceptionRulesAreDerivedFromDiagnostics() {
+        var event = makeEvent(pid: 42)
+        event.diagnostics = [
+            "payload-snapshot-fallback",
+            "intercepted-rule:first",
+            "intercepted-rule:second",
+        ]
+
+        XCTAssertTrue(event.isIntercepted)
+        XCTAssertEqual(event.appliedInterceptionRuleIDs, ["first", "second"])
+    }
+
+    func testPrettyPrintedJSONIsSuitableForClipboardExport() throws {
+        var event = makeEvent(pid: 42)
+        event.serviceName = "com.example.fixture"
+
+        let json = try event.prettyPrintedJSONString()
+
+        XCTAssertTrue(json.contains("\"serviceName\" : \"com.example.fixture\""))
+        XCTAssertTrue(json.contains("\"pid\" : 42"))
+    }
+
     private func makeEvent(pid: Int32) -> CaptureEventEnvelope {
         CaptureEventEnvelope(
             schemaVersion: CaptureEventEnvelope.currentSchemaVersion,

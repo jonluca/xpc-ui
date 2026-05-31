@@ -101,6 +101,27 @@ struct CaptureEventEnvelope: Codable, Hashable, Identifiable, Sendable {
         let seconds = Double(monotonicTimestamp) / 1_000_000_000
         return seconds.formatted(.number.precision(.fractionLength(6)))
     }
+
+    var appliedInterceptionRuleIDs: [String] {
+        diagnostics.compactMap { diagnostic in
+            guard diagnostic.hasPrefix(Self.interceptionDiagnosticPrefix) else {
+                return nil
+            }
+            return String(diagnostic.dropFirst(Self.interceptionDiagnosticPrefix.count))
+        }
+    }
+
+    var isIntercepted: Bool {
+        diagnostics.contains { $0.hasPrefix(Self.interceptionDiagnosticPrefix) }
+    }
+
+    func prettyPrintedJSONString() throws -> String {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
+        return String(decoding: try encoder.encode(self), as: UTF8.self)
+    }
+
+    private static let interceptionDiagnosticPrefix = "intercepted-rule:"
 }
 
 struct TraceAuthentication: Codable {

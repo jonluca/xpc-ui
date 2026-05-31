@@ -18,6 +18,7 @@ final class DiagnosticsService: ObservableObject {
                 Self.commandOutput("/usr/bin/csrutil", arguments: ["status"])
             }.value
             let sipEnabled = sipOutput.localizedCaseInsensitiveContains("enabled")
+            let endpointSecurityStatus = await EndpointSecurityAdapter.shared.diagnosticStatus()
             capabilities = [
                 CapabilityStatus(
                     id: "injected-xpc",
@@ -36,9 +37,9 @@ final class DiagnosticsService: ObservableObject {
                 CapabilityStatus(
                     id: "nsxpc-lifecycle",
                     title: "Optional NSXPC lifecycle adapter",
-                    level: traceLibraryAvailable ? .limited : .unavailable,
+                    level: traceLibraryAvailable ? .available : .unavailable,
                     detail: traceLibraryAvailable
-                        ? "A replaceable NSXPCConnection initializer adapter is available as an explicit launch-time opt-in. It uses Objective-C swizzling and remains disabled by default."
+                        ? "A replaceable NSXPCConnection initializer adapter is bundled and enabled by default when available. It uses Objective-C swizzling and can be disabled before launch."
                         : "The optional NSXPCConnection adapter requires the injected XPCTrace dylib."
                 ),
                 CapabilityStatus(
@@ -52,16 +53,14 @@ final class DiagnosticsService: ObservableObject {
                 CapabilityStatus(
                     id: "mach",
                     title: "Mach namespace snapshots",
-                    level: .limited,
-                    detail: "Available per target when task_for_pid is permitted; denied targets remain visible with a capability note."
+                    level: .available,
+                    detail: "Mach namespace snapshots are available. Per-target task_for_pid denials remain visible with a capability note."
                 ),
                 CapabilityStatus(
                     id: "endpoint-security",
                     title: "Endpoint Security telemetry",
-                    level: EndpointSecurityAdapter.isEmbedded ? .limited : .unavailable,
-                    detail: EndpointSecurityAdapter.isEmbedded
-                        ? "The entitlement-gated system extension is embedded. \(EndpointSecurityAdapter.activationNote)"
-                        : "The Endpoint Security system extension is missing from the app bundle."
+                    level: endpointSecurityStatus.level,
+                    detail: endpointSecurityStatus.detail
                 ),
                 CapabilityStatus(
                     id: "kernel",
@@ -116,7 +115,7 @@ final class DiagnosticsService: ObservableObject {
         case .requiresApproval: "Registration requires approval in System Settings."
         case .notRegistered where bundledPlistAvailable: "The bundled LaunchDaemon is not registered."
         case .notFound where bundledPlistAvailable:
-            "The LaunchDaemon plist is bundled, but ServiceManagement cannot discover it from this build. Registration requires a signed, notarized app bundle."
+            "The LaunchDaemon plist is bundled, but ServiceManagement cannot discover it from this build. Registration requires a signed, notarized app bundle installed in /Applications."
         case .notRegistered, .notFound: "The bundled LaunchDaemon plist was not found."
         @unknown default: "The helper reported an unknown registration state."
         }

@@ -69,9 +69,14 @@ private struct SidebarStatus: View {
         VStack(alignment: .leading, spacing: 5) {
             Text(sessionController.status)
                 .font(.caption.weight(.semibold))
-            Text("\(store.events.count.formatted()) events")
+            Text("\(store.totalCapturedEventCount.formatted()) events")
                 .font(.caption)
                 .foregroundStyle(.secondary)
+            if store.totalCapturedEventCount > store.events.count {
+                Text("\(store.events.count.formatted()) in timeline window")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
             if !sessionController.trackedPIDs.isEmpty {
                 Text("\(sessionController.trackedPIDs.count.formatted()) tracked process\(sessionController.trackedPIDs.count == 1 ? "" : "es")")
                     .font(.caption)
@@ -101,24 +106,64 @@ private struct SidebarStatus: View {
 
 private struct TimelineScreen: View {
     @ObservedObject var store: EventStore
+    @State private var preparedInterceptionRule: InterceptionRule?
+    @State private var interceptionRuleErrorMessage: String?
 
     var body: some View {
         VStack(spacing: 0) {
             CaptureToolbar(store: store)
             Divider()
-            HSplitView {
-                TimelineTable(
-                    events: store.visibleEvents,
-                    generation: store.timelineGeneration,
-                    selection: $store.selectedEventID
-                )
-                    .frame(minWidth: 580)
-                PayloadView(event: store.selectedEvent, blobStore: store.payloadBlobStore)
-                    .frame(minWidth: 280, idealWidth: 360)
+            Group {
+                if let selectedEvent = store.selectedEvent {
+                    HSplitView {
+                        timelineTable
+                        PayloadView(
+                            event: selectedEvent,
+                            blobStore: store.payloadBlobStore,
+                            onDraftInterceptionRule: prepareInterceptionRule
+                        )
+                            .frame(minWidth: 280, idealWidth: 360, maxHeight: .infinity)
+                    }
+                } else {
+                    timelineTable
+                }
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .navigationTitle("Live Timeline")
+        .navigationTitle(store.timelineTitle)
+        .sheet(item: $preparedInterceptionRule) { rule in
+            InterceptionRuleEditor(rule: rule) { savedRule in
+                do {
+                    try store.sessionController.interceptionRules.add(savedRule)
+                    preparedInterceptionRule = nil
+                } catch {
+                    interceptionRuleErrorMessage = error.localizedDescription
+                }
+            }
+        }
+        .alert(
+            "Unable to save interception rule",
+            isPresented: .constant(interceptionRuleErrorMessage != nil)
+        ) {
+            Button("OK") { interceptionRuleErrorMessage = nil }
+        } message: {
+            Text(interceptionRuleErrorMessage ?? "")
+        }
+    }
+
+    private var timelineTable: some View {
+        TimelineTable(
+            events: store.visibleEvents,
+            generation: store.timelineGeneration,
+            selection: $store.selectedEventID,
+            onPrepareInterceptionRule: prepareInterceptionRule
+        )
+        .frame(minWidth: 580, maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private func prepareInterceptionRule(from event: CaptureEventEnvelope) {
+        preparedInterceptionRule = InterceptionRule.prepared(from: event)
     }
 }
 
@@ -127,6 +172,8 @@ private struct CaptureToolbar: View {
     @ObservedObject var sessionController: SessionController
     @State private var errorMessage: String?
     @State private var showExportWarning = false
+    @State private var showInterceptionRules = false
+    @State private var showOfflineCaptureInfo = false
     @State private var pendingPreflight: TargetPreflight?
 
     init(store: EventStore) {
@@ -141,9 +188,14 @@ private struct CaptureToolbar: View {
                     selectAndLaunch()
                 }
                 .buttonStyle(.borderedProminent)
+                Button(store.isOpeningCapture ? "Opening..." : "Open Capture", systemImage: "folder") {
+                    openCapture()
+                }
+                .disabled(sessionController.targetPID != nil || store.isOpeningCapture)
                 Button(store.paused ? "Resume" : "Pause", systemImage: store.paused ? "play" : "pause") {
                     store.paused.toggle()
                 }
+                .disabled(sessionController.targetPID == nil)
                 Button("Stop", systemImage: "stop.fill") {
                     sessionController.stop()
                 }
@@ -157,24 +209,24 @@ private struct CaptureToolbar: View {
                 Toggle("Kernel", isOn: $sessionController.kernelDeepModeEnabled)
                     .toggleStyle(.switch)
                     .fixedSize()
-                    .disabled(sessionController.targetPID != nil)
-                    .help("Opt in to filtered DTrace syscall and mach_trap events before launch.")
+                    .disabled(preLaunchConfigurationDisabled)
+                    .help("Collect filtered DTrace syscall and mach_trap events when available. This starts on when dtrace is installed.")
                 Toggle("NSXPC", isOn: $sessionController.optionalNSXPCLifecycleAdapterEnabled)
                     .toggleStyle(.switch)
                     .fixedSize()
-                    .disabled(sessionController.targetPID != nil)
-                    .help("Opt in to the replaceable NSXPCConnection lifecycle adapter. This uses Objective-C swizzling and is off by default.")
+                    .disabled(preLaunchConfigurationDisabled)
+                    .help("Collect NSXPCConnection lifecycle events when the tracer is available. This uses Objective-C swizzling and starts on when bundled.")
                 Toggle("ES", isOn: $sessionController.endpointSecurityTelemetryEnabled)
                     .toggleStyle(.switch)
                     .fixedSize()
-                    .disabled(sessionController.targetPID != nil)
-                    .help("Opt in to supported Endpoint Security telemetry after activating the entitlement-gated system extension.")
+                    .disabled(preLaunchConfigurationDisabled)
+                    .help("Collect supported Endpoint Security telemetry when the entitlement-gated system extension is embedded and activated.")
                 Menu("Kernel Filters", systemImage: "line.3.horizontal.decrease.circle") {
                     ForEach(KernelTraceService.Category.allCases) { category in
                         Toggle(category.title, isOn: kernelCategoryBinding(category))
                     }
                 }
-                .disabled(sessionController.targetPID != nil || !sessionController.kernelDeepModeEnabled)
+                .disabled(preLaunchConfigurationDisabled || !sessionController.kernelDeepModeEnabled)
                 if sessionController.kernelDeepModeEnabled {
                     Text(sessionController.kernelTraceStatus)
                         .font(.caption)
@@ -209,11 +261,25 @@ private struct CaptureToolbar: View {
                 TextField("Search events", text: $store.searchText)
                     .textFieldStyle(.roundedBorder)
                     .frame(maxWidth: 260)
+                Toggle("Intercept", isOn: interceptionEnabledBinding)
+                    .toggleStyle(.switch)
+                    .fixedSize()
+                    .disabled(preLaunchConfigurationDisabled)
+                    .help("Lab-only opt in. Matching pre-launch rules may modify selected XPC arguments or responses before forwarding.")
+                Button("Rules \(sessionController.interceptionRules.enabledRuleCount)") {
+                    showInterceptionRules = true
+                }
+                .help("Review and edit rules for the next target launch.")
+                if store.offlineCaptureManifest != nil {
+                    Button("Capture Info", systemImage: "info.circle") {
+                        showOfflineCaptureInfo = true
+                    }
+                }
                 Spacer()
             }
         }
         .padding(10)
-        .alert("Unable to launch target", isPresented: .constant(errorMessage != nil)) {
+        .alert("Capture action failed", isPresented: .constant(errorMessage != nil)) {
             Button("OK") { errorMessage = nil }
         } message: {
             Text(errorMessage ?? "")
@@ -226,17 +292,35 @@ private struct CaptureToolbar: View {
             Button("Export Sensitive Payloads") { exportCapture() }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("The .xpcapture bundle contains unredacted XPC payloads and binary blobs.")
+            Text("The .xpcapture bundle contains unredacted XPC payloads, binary blobs, and any lab-only interception rules used for the session.")
         }
         .sheet(item: $pendingPreflight) { preflight in
             TargetPreflightView(
                 preflight: preflight,
+                interceptionRuleCount: sessionController.interceptionRules.enabled
+                    ? sessionController.interceptionRules.enabledRuleCount
+                    : 0,
                 onCancel: { pendingPreflight = nil },
                 onLaunch: {
                     pendingPreflight = nil
                     launch(preflight: preflight)
                 }
             )
+        }
+        .sheet(isPresented: $showInterceptionRules) {
+            InterceptionRulesView(store: sessionController.interceptionRules)
+        }
+        .sheet(isPresented: $showOfflineCaptureInfo) {
+            if
+                let manifest = store.offlineCaptureManifest,
+                let bundleURL = sessionController.offlineCaptureURL
+            {
+                OfflineCaptureInfoView(
+                    manifest: manifest,
+                    bundleURL: bundleURL,
+                    retainedEventCount: store.events.count
+                )
+            }
         }
     }
 
@@ -275,6 +359,23 @@ private struct CaptureToolbar: View {
         }
     }
 
+    private func openCapture() {
+        let panel = NSOpenPanel()
+        panel.title = "Open Capture"
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = true
+        panel.allowsMultipleSelection = false
+        panel.allowedContentTypes = [UTType(filenameExtension: "xpcapture") ?? .package]
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        Task {
+            do {
+                try await store.openCapture(at: url)
+            } catch {
+                errorMessage = error.localizedDescription
+            }
+        }
+    }
+
     private func kernelCategoryBinding(_ category: KernelTraceService.Category) -> Binding<Bool> {
         Binding(
             get: { sessionController.selectedKernelCategories.contains(category) },
@@ -287,10 +388,108 @@ private struct CaptureToolbar: View {
             }
         )
     }
+
+    private var interceptionEnabledBinding: Binding<Bool> {
+        Binding(
+            get: { sessionController.interceptionRules.enabled },
+            set: { sessionController.interceptionRules.enabled = $0 }
+        )
+    }
+
+    private var preLaunchConfigurationDisabled: Bool {
+        sessionController.targetPID != nil || sessionController.offlineCaptureURL != nil
+    }
+}
+
+private struct OfflineCaptureInfoView: View {
+    let manifest: CaptureExportService.Manifest
+    let bundleURL: URL
+    let retainedEventCount: Int
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Offline Capture")
+                    .font(.title2.weight(.semibold))
+                Text(bundleURL.path)
+                    .font(.caption.monospaced())
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+            }
+            List {
+                Section("Evidence") {
+                    LabeledContent("Session", value: manifest.sessionID)
+                    LabeledContent("Exported", value: manifest.exportedAt.formatted())
+                    LabeledContent("Events", value: manifest.eventCount.formatted())
+                    LabeledContent("Timeline window", value: retainedEventCount.formatted())
+                    LabeledContent("Dropped", value: manifest.droppedEventCount.formatted())
+                    if let targetPID = manifest.targetPID {
+                        LabeledContent("Target PID", value: String(targetPID))
+                    }
+                    if let targetPath = manifest.targetPath {
+                        LabeledContent("Target", value: targetPath)
+                    }
+                }
+                if let counters = manifest.dropCounters {
+                    Section("Drop Counters") {
+                        LabeledContent("UI buffer", value: counters.uiBuffer.formatted())
+                        if let journal = counters.journal {
+                            LabeledContent("Journal", value: journal.formatted())
+                        }
+                        ForEach(counters.collectors, id: \.self) { collector in
+                            LabeledContent(
+                                "\(collector.source) PID \(collector.pid)",
+                                value: collector.droppedEventCount.formatted()
+                            )
+                        }
+                    }
+                }
+                if let capabilityResults = manifest.capabilityResults, !capabilityResults.isEmpty {
+                    Section("Capture Capabilities") {
+                        ForEach(capabilityResults, id: \.id) { capability in
+                            VStack(alignment: .leading, spacing: 3) {
+                                HStack {
+                                    Text(capability.title).fontWeight(.medium)
+                                    Spacer()
+                                    Text(capability.level)
+                                        .font(.caption.weight(.semibold))
+                                        .foregroundStyle(capabilityColor(capability.level))
+                                }
+                                Text(capability.detail)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                            .padding(.vertical, 3)
+                        }
+                    }
+                }
+                Section("Evidence Warnings") {
+                    ForEach(manifest.capabilityNotes, id: \.self, content: Text.init)
+                }
+            }
+            HStack {
+                Spacer()
+                Button("Done") { dismiss() }
+                    .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(20)
+        .frame(minWidth: 680, minHeight: 540)
+    }
+
+    private func capabilityColor(_ level: String) -> Color {
+        switch level {
+        case "available": .green
+        case "limited", "requested": .orange
+        default: .secondary
+        }
+    }
 }
 
 private struct TargetPreflightView: View {
     let preflight: TargetPreflight
+    let interceptionRuleCount: Int
     let onCancel: () -> Void
     let onLaunch: () -> Void
 
@@ -321,6 +520,14 @@ private struct TargetPreflightView: View {
                 .padding(.vertical, 4)
             }
             .frame(minHeight: 260)
+            if interceptionRuleCount > 0 {
+                Label(
+                    "Lab-only interception is enabled. \(interceptionRuleCount) matching rule\(interceptionRuleCount == 1 ? "" : "s") may modify selected XPC arguments or responses before forwarding.",
+                    systemImage: "exclamationmark.triangle.fill"
+                )
+                .font(.caption)
+                .foregroundStyle(.orange)
+            }
             HStack {
                 if preflight.hasLimitedCoverage {
                     Text("Launch is allowed, but reported limitations may reduce capture coverage.")

@@ -11,14 +11,17 @@ final class SessionController: ObservableObject {
     @Published private(set) var launchPreflight: TargetPreflight?
     @Published private(set) var session: TraceSession?
     @Published var deepCaptureEnabled = true
-    @Published var optionalNSXPCLifecycleAdapterEnabled = false
-    @Published var endpointSecurityTelemetryEnabled = false
-    @Published var kernelDeepModeEnabled = false
+    @Published var optionalNSXPCLifecycleAdapterEnabled =
+        Bundle.main.url(forResource: "XPCTrace", withExtension: "dylib") != nil
+    @Published var endpointSecurityTelemetryEnabled = EndpointSecurityAdapter.isEmbedded
+    @Published var kernelDeepModeEnabled = KernelTraceService.isAvailable
     @Published var selectedKernelCategories = Set(KernelTraceService.Category.allCases)
     @Published private(set) var kernelTraceStatus = "Off"
     @Published private(set) var endpointSecurityStatus = "Off"
     @Published private(set) var trackedPIDs = Set<Int32>()
+    @Published private(set) var offlineCaptureURL: URL?
 
+    let interceptionRules = InterceptionRuleStore()
     weak var store: EventStore?
     private let socketServer = TraceSocketServer()
     private let kernelTraceService = KernelTraceService()
@@ -48,6 +51,7 @@ final class SessionController: ObservableObject {
         targetPID = nil
         targetPath = nil
         trackedPIDs.removeAll()
+        offlineCaptureURL = nil
     }
 
     func launch(url: URL) async throws {
@@ -118,6 +122,23 @@ final class SessionController: ObservableObject {
         return await Task.detached(priority: .userInitiated) {
             TargetPreflightService.inspect(url: url, deepCaptureEnabled: deepCaptureEnabled)
         }.value
+    }
+
+    func presentOfflineCapture(
+        bundleURL: URL,
+        manifest: CaptureExportService.Manifest,
+        trackedPIDs: Set<Int32>
+    ) {
+        if let session {
+            try? FileManager.default.removeItem(at: session.directoryURL)
+        }
+        session = nil
+        launchPreflight = nil
+        capturedTargetPID = manifest.targetPID
+        capturedTargetPath = manifest.targetPath
+        offlineCaptureURL = bundleURL
+        self.trackedPIDs = trackedPIDs
+        status = "Offline \(bundleURL.lastPathComponent)"
     }
 
     private func updateKernelTrace(pids: Set<Int32>, sessionID: String) {
@@ -239,6 +260,9 @@ final class SessionController: ObservableObject {
             ) {
                 environment["XPCUI_OPTIONAL_ADAPTERS"] = optionalAdapters
             }
+            if let rulesURL = try interceptionRules.writeConfiguration(to: session.directoryURL) {
+                environment["XPCUI_INTERCEPTION_RULES_PATH"] = rulesURL.path
+            }
         }
         return environment
     }
@@ -311,6 +335,16 @@ final class SessionController: ObservableObject {
                 detail: kernelDeepModeEnabled
                     ? exportStatus(kernelTraceStatus, fallback: "Kernel deep mode was requested for this session.")
                     : "Kernel deep mode was not requested for this session."
+            )
+        )
+        results.append(
+            CaptureExportService.CapabilityResult(
+                id: "xpc-interception",
+                title: "Lab-only XPC interception",
+                level: interceptionRules.enabled ? "requested" : "disabled",
+                detail: interceptionRules.enabled
+                    ? "\(interceptionRules.enabledRuleCount) bounded pre-launch rule\(interceptionRules.enabledRuleCount == 1 ? "" : "s") requested. Matching rules may modify selected XPC arguments or responses before forwarding."
+                    : "XPC interception was disabled for this session."
             )
         )
         return results

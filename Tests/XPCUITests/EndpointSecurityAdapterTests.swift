@@ -1,7 +1,35 @@
 import Foundation
 import XCTest
+@testable import XPC_UI
 
 final class EndpointSecurityAdapterTests: XCTestCase {
+    func testActiveEmbeddedExtensionReportsAvailable() {
+        let status = EndpointSecurityAdapter.diagnosticStatus(
+            isEmbedded: true,
+            hasEnabledExtension: true
+        )
+
+        XCTAssertEqual(status.level, .available)
+        XCTAssertTrue(status.detail.contains("active"))
+    }
+
+    func testEmbeddedExtensionWaitingForApprovalReportsLimited() {
+        let status = EndpointSecurityAdapter.diagnosticStatus(
+            isEmbedded: true,
+            hasAwaitingApprovalExtension: true
+        )
+
+        XCTAssertEqual(status.level, .limited)
+        XCTAssertTrue(status.detail.contains("waiting for approval"))
+    }
+
+    func testMissingEmbeddedExtensionReportsUnavailable() {
+        let status = EndpointSecurityAdapter.diagnosticStatus(isEmbedded: false)
+
+        XCTAssertEqual(status.level, .unavailable)
+        XCTAssertTrue(status.detail.contains("missing"))
+    }
+
     func testProjectEmbedsEntitlementGatedSystemExtension() throws {
         let project = try String(contentsOf: repositoryRoot.appendingPathComponent("project.yml"))
         let entitlements = try String(
@@ -40,6 +68,8 @@ final class EndpointSecurityAdapterTests: XCTestCase {
         XCTAssertTrue(source.contains("SecCodeCopyGuestWithAttributes"))
         XCTAssertTrue(source.contains("SecCodeCheckValidity"))
         XCTAssertTrue(source.contains("kSecCodeInfoTeamIdentifier"))
+        XCTAssertTrue(source.contains("#if !DEBUG"))
+        XCTAssertTrue(source.contains("same_team || both_adhoc"))
     }
 
     func testAppBridgeSendsSessionAndDescendantConfiguration() throws {

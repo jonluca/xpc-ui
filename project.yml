@@ -20,6 +20,7 @@ targets:
         PRODUCT_NAME: XPCTrace
         PRODUCT_BUNDLE_IDENTIFIER: com.jonluca.xpcui.trace
         SKIP_INSTALL: YES
+        OTHER_LDFLAGS: -framework CoreFoundation
   CaptureHelper:
     type: tool
     platform: macOS
@@ -134,6 +135,15 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.jonluca.xpcui.fixture-cli
         PRODUCT_NAME: XPCFixtureCLI
+  XPCFixtureMachService:
+    type: tool
+    platform: macOS
+    sources:
+      - Sources/XPCFixtureMachService
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.jonluca.xpcui.fixture-mach-service
+        PRODUCT_NAME: XPCFixtureMachService
   XPCUITests:
     type: bundle.unit-test
     platform: macOS
@@ -153,6 +163,7 @@ schemes:
         XPCUI: all
         XPCFixture: all
         XPCFixtureCLI: all
+        XPCFixtureMachService: all
         XPCUITests: [test]
     test:
       targets:

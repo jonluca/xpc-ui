@@ -54,12 +54,41 @@ final class XPCTraceHookCoverageTests: XCTestCase {
         XCTAssertTrue(source.contains("atomic_fetch_add_explicit(&xpcui_dropped, 1"))
     }
 
-    func testOptionalNSXPCAdapterRequiresExplicitOptIn() {
+    func testInterceptionRulesRemainBoundedAndOptIn() throws {
+        let source = try String(contentsOf: repositoryRoot.appendingPathComponent("Sources/XPCTrace/XPCTrace.c"))
+
+        XCTAssertTrue(source.contains("#define XPCUI_INTERCEPTION_RULE_CAPACITY 32"))
+        XCTAssertTrue(source.contains("getenv(\"XPCUI_INTERCEPTION_RULES_PATH\")"))
+        XCTAssertTrue(source.contains("atomic_load_explicit(&xpcui_interception_enabled, memory_order_relaxed)"))
+        XCTAssertTrue(source.contains("xpcui_apply_interception("))
+        XCTAssertTrue(source.contains("xpc_dictionary_set_string("))
+        XCTAssertTrue(source.contains("xpc_dictionary_set_int64("))
+        XCTAssertTrue(source.contains("xpcui_dictionary_get_key_path("))
+        XCTAssertTrue(source.contains("XPCUI_INTERCEPTION_KEY_PATH_DEPTH 8"))
+        XCTAssertTrue(source.contains("interception_rule_ids"))
+        XCTAssertTrue(source.contains("intercepted-rule:%s"))
+    }
+
+    func testOptionalNSXPCAdapterCanBeDisabledBeforeLaunch() {
         XCTAssertNil(SessionController.optionalAdaptersEnvironment(nsxpcLifecycleEnabled: false))
         XCTAssertEqual(
             SessionController.optionalAdaptersEnvironment(nsxpcLifecycleEnabled: true),
             "nsxpc-lifecycle"
         )
+    }
+
+    @MainActor
+    func testAvailableInspectionModesStartEnabled() {
+        let controller = SessionController()
+
+        XCTAssertTrue(controller.deepCaptureEnabled)
+        XCTAssertEqual(
+            controller.optionalNSXPCLifecycleAdapterEnabled,
+            Bundle.main.url(forResource: "XPCTrace", withExtension: "dylib") != nil
+        )
+        XCTAssertEqual(controller.endpointSecurityTelemetryEnabled, EndpointSecurityAdapter.isEmbedded)
+        XCTAssertEqual(controller.kernelDeepModeEnabled, KernelTraceService.isAvailable)
+        XCTAssertFalse(controller.interceptionRules.enabled)
     }
 
     func testOptionalNSXPCAdapterOwnsReplaceableInitializerHooks() throws {

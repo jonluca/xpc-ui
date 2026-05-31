@@ -138,6 +138,40 @@ final class CaptureExportServiceTests: XCTestCase {
         XCTAssertNil(decoded.dropCounters)
     }
 
+    func testExportPreservesAppliedInterceptionRules() throws {
+        let session = try TraceSession.create()
+        let export = FileManager.default.temporaryDirectory
+            .appendingPathComponent("\(UUID().uuidString).xpcapture")
+        defer {
+            try? FileManager.default.removeItem(at: session.directoryURL)
+            try? FileManager.default.removeItem(at: export)
+        }
+        let rulesURL = session.directoryURL.appendingPathComponent("interception-rules.plist")
+        try Data("private-rules".utf8).write(to: rulesURL)
+
+        try CaptureExportService.write(
+            session: session,
+            events: [],
+            snapshot: nil,
+            droppedEventCount: 0,
+            targetPID: 3,
+            targetPath: "/tmp/example",
+            to: export
+        )
+
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let manifest = try decoder.decode(
+            CaptureExportService.Manifest.self,
+            from: Data(contentsOf: export.appendingPathComponent("manifest.json"))
+        )
+        XCTAssertEqual(manifest.includesInterceptionRules, true)
+        XCTAssertEqual(
+            try Data(contentsOf: export.appendingPathComponent("interception-rules.plist")),
+            Data("private-rules".utf8)
+        )
+    }
+
     func testExportUsesCompletePrivateJournalInsteadOfRetainedWindow() throws {
         let session = try TraceSession.create()
         let export = FileManager.default.temporaryDirectory

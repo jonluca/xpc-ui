@@ -34,6 +34,10 @@ final class EventStore: ObservableObject {
     @Published private(set) var categories = ["all"]
     @Published private(set) var timelineProcesses: [TimelineProcessOption] = []
     @Published private(set) var selectedPreset = TimelinePreset.all
+    @Published private(set) var totalCapturedEventCount = 0
+    @Published private(set) var offlineCaptureName: String?
+    @Published private(set) var offlineCaptureManifest: CaptureExportService.Manifest?
+    @Published private(set) var isOpeningCapture = false
 
     let sessionController: SessionController
 
@@ -62,6 +66,10 @@ final class EventStore: ObservableObject {
 
     var selectedEvent: CaptureEventEnvelope? {
         events.first { $0.id == selectedEventID }
+    }
+
+    var timelineTitle: String {
+        offlineCaptureName.map { "Offline Capture: \($0)" } ?? "Live Timeline"
     }
 
     nonisolated func ingest(frame: Data) {
@@ -96,7 +104,11 @@ final class EventStore: ObservableObject {
         observedProcessIDs.removeAll(keepingCapacity: true)
         processNamesByPID.removeAll(keepingCapacity: true)
         launchTargetPID = nil
+        totalCapturedEventCount = 0
+        offlineCaptureName = nil
+        offlineCaptureManifest = nil
         selectedProcessID = nil
+        paused = false
         pending.reset()
         eventJournal.reset()
     }
@@ -125,6 +137,50 @@ final class EventStore: ObservableObject {
             targetPath: sessionController.capturedTargetPath,
             to: destination
         )
+    }
+
+    func openCapture(at bundleURL: URL) async throws {
+        isOpeningCapture = true
+        defer { isOpeningCapture = false }
+        let capture = try await Task.detached(priority: .userInitiated) {
+            try CaptureImportService.read(from: bundleURL)
+        }.value
+        sessionController.stop()
+        reset()
+        blobStore.configure(blobsURL: capture.blobsURL)
+        events = capture.events
+        totalCapturedEventCount = capture.parsedEventCount
+        offlineCaptureName = bundleURL.lastPathComponent
+        offlineCaptureManifest = capture.manifest
+        categorySet = capture.categories
+        categories = ["all"] + categorySet.sorted()
+        observedProcessIDs = capture.observedProcessIDs
+        xpcServicesByPID = capture.xpcServicesByPID
+        if let snapshot = capture.snapshot {
+            update(snapshot: snapshot)
+        } else {
+            launchTargetPID = capture.manifest.targetPID
+            publishTimelineProcesses()
+        }
+        let dropCounters = capture.manifest.dropCounters
+        appDroppedEventCount = dropCounters?.uiBuffer ?? 0
+        journalDroppedEventCount = dropCounters?.journal ?? 0
+        collectorDropCounts = Dictionary(
+            uniqueKeysWithValues: (dropCounters?.collectors ?? []).map {
+                (
+                    CollectorID(source: $0.source, pid: $0.pid),
+                    $0.droppedEventCount
+                )
+            }
+        )
+        tracerDroppedEventCount = collectorDropCounts.values.reduce(0, +)
+        droppedEventCount = capture.manifest.droppedEventCount
+        sessionController.presentOfflineCapture(
+            bundleURL: bundleURL,
+            manifest: capture.manifest,
+            trackedPIDs: observedProcessIDs
+        )
+        rebuildVisibleEvents()
     }
 
     func update(snapshot: ProcessTreeSnapshot) {
@@ -160,6 +216,7 @@ final class EventStore: ObservableObject {
         guard !batch.events.isEmpty || batch.decodeFailures > 0 || batch.overflowDrops > 0 else { return }
         let filter = currentFilter
         events.append(contentsOf: batch.events)
+        totalCapturedEventCount += batch.events.count
         visibleEvents.append(contentsOf: batch.events.filter(filter.matches))
         let previousProcessCount = observedProcessIDs.count
         observedProcessIDs.formUnion(batch.events.map(\.pid))
@@ -268,6 +325,7 @@ enum TimelinePreset: String, CaseIterable, Identifiable, Sendable {
     case all
     case ipcFirst
     case xpcPayloads
+    case intercepted
     case kernelDeep
 
     var id: String { rawValue }
@@ -277,6 +335,7 @@ enum TimelinePreset: String, CaseIterable, Identifiable, Sendable {
         case .all: "All Traffic"
         case .ipcFirst: "IPC First"
         case .xpcPayloads: "XPC Payloads"
+        case .intercepted: "Intercepted"
         case .kernelDeep: "Kernel Deep"
         }
     }
@@ -286,6 +345,7 @@ enum TimelinePreset: String, CaseIterable, Identifiable, Sendable {
         case .all: "list.bullet"
         case .ipcFirst: "arrow.left.arrow.right"
         case .xpcPayloads: "bubble.left.and.bubble.right"
+        case .intercepted: "bolt.fill"
         case .kernelDeep: "waveform.path.ecg"
         }
     }
@@ -306,6 +366,8 @@ struct TimelineFilter: Sendable {
             matchesPreset = event.category == "xpc" || event.category == "mach_trap"
         case .xpcPayloads:
             matchesPreset = event.category == "xpc"
+        case .intercepted:
+            matchesPreset = event.isIntercepted
         case .kernelDeep:
             matchesPreset = event.category == "syscall" || event.category == "mach_trap"
         }

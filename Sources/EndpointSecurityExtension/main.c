@@ -509,14 +509,20 @@ static bool xpcui_peer_has_expected_identifier(xpc_connection_t peer) {
         CFStringRef identifier = CFDictionaryGetValue(information, kSecCodeInfoIdentifier);
         CFStringRef team_identifier = CFDictionaryGetValue(information, kSecCodeInfoTeamIdentifier);
         CFStringRef own_team_identifier = CFDictionaryGetValue(own_information, kSecCodeInfoTeamIdentifier);
-        trusted = identifier
-            && CFGetTypeID(identifier) == CFStringGetTypeID()
-            && CFStringCompare(identifier, CFSTR("com.jonluca.xpcui"), 0) == kCFCompareEqualTo
-            && team_identifier
+        bool same_team = team_identifier
             && CFGetTypeID(team_identifier) == CFStringGetTypeID()
             && own_team_identifier
             && CFGetTypeID(own_team_identifier) == CFStringGetTypeID()
             && CFStringCompare(team_identifier, own_team_identifier, 0) == kCFCompareEqualTo;
+#if DEBUG
+        bool both_adhoc = !team_identifier && !own_team_identifier;
+#else
+        bool both_adhoc = false;
+#endif
+        trusted = identifier
+            && CFGetTypeID(identifier) == CFStringGetTypeID()
+            && CFStringCompare(identifier, CFSTR("com.jonluca.xpcui"), 0) == kCFCompareEqualTo
+            && (same_team || both_adhoc);
     }
     if (own_information) CFRelease(own_information);
     if (own_static_code) CFRelease(own_static_code);
@@ -536,12 +542,14 @@ int main(void) {
         xpcui_state_queue,
         XPC_CONNECTION_MACH_SERVICE_LISTENER
     );
+#if !DEBUG
     if (__builtin_available(macOS 14.4, *)) {
         if (xpc_connection_set_peer_team_identity_requirement(listener, "com.jonluca.xpcui") != 0) {
             return EXIT_FAILURE;
         }
         xpcui_listener_has_native_peer_requirement = true;
     }
+#endif
     xpc_connection_set_event_handler(listener, ^(xpc_object_t peer) {
         if (xpc_get_type(peer) != XPC_TYPE_CONNECTION) return;
         if (!xpcui_listener_has_native_peer_requirement && !xpcui_peer_has_expected_identifier(peer)) {

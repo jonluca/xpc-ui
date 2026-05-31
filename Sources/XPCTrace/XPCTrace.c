@@ -1,9 +1,11 @@
 #include <arpa/inet.h>
+#include <CoreFoundation/CoreFoundation.h>
 #include <dispatch/dispatch.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
 #include <mach/mach_time.h>
+#include <math.h>
 #include <pthread.h>
 #include <stdarg.h>
 #include <stdatomic.h>
@@ -12,7 +14,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <sys/un.h>
 #include <time.h>
 #include <unistd.h>
@@ -26,6 +30,11 @@
 #define XPCUI_MAX_FRAME_SIZE (64 * 1024 * 1024)
 #define XPCUI_LAZY_PAYLOAD_THRESHOLD (512 * 1024)
 #define XPCUI_MAX_DEPTH 24
+#define XPCUI_INTERCEPTION_RULE_CAPACITY 32
+#define XPCUI_INTERCEPTION_KEY_PATH_DEPTH 8
+#define XPCUI_INTERCEPTION_KEY_SEGMENT_CAPACITY 128
+#define XPCUI_INTERCEPTION_KEY_PATH_CAPACITY 1024
+#define XPCUI_INTERCEPTION_VALUE_CAPACITY 4096
 
 typedef struct {
     char *data;
@@ -39,6 +48,8 @@ typedef struct {
     char *direction;
     char *operation;
     char *service_name;
+    char **interception_rule_ids;
+    size_t interception_rule_count;
     uint64_t sequence;
     uint64_t timestamp;
     uint64_t thread_id;
@@ -58,6 +69,41 @@ static const char *xpcui_auth_token = NULL;
 static const char *xpcui_socket_path = NULL;
 static const char *xpcui_blobs_path = NULL;
 static bool xpcui_enabled = false;
+static atomic_bool xpcui_interception_enabled = false;
+
+typedef enum {
+    XPCUI_INTERCEPTION_REPLACEMENT_STRING,
+    XPCUI_INTERCEPTION_REPLACEMENT_BOOL,
+    XPCUI_INTERCEPTION_REPLACEMENT_INT64,
+    XPCUI_INTERCEPTION_REPLACEMENT_UINT64,
+    XPCUI_INTERCEPTION_REPLACEMENT_DOUBLE,
+} xpcui_interception_replacement_type_t;
+
+typedef struct {
+    char *id;
+    char *service_name;
+    char *direction;
+    char *operation;
+    char *match_key;
+    char *match_string_value;
+    char *replacement_key;
+    char *replacement_value;
+    xpcui_interception_replacement_type_t replacement_type;
+    bool replacement_bool_value;
+    int64_t replacement_int64_value;
+    uint64_t replacement_uint64_value;
+    double replacement_double_value;
+} xpcui_interception_rule_t;
+
+typedef struct {
+    xpc_object_t message;
+    const char *rule_ids[XPCUI_INTERCEPTION_RULE_CAPACITY];
+    size_t rule_count;
+    bool owns_message;
+} xpcui_interception_result_t;
+
+static xpcui_interception_rule_t xpcui_interception_rules[XPCUI_INTERCEPTION_RULE_CAPACITY];
+static size_t xpcui_interception_rule_count = 0;
 
 typedef struct {
     const void *endpoint;
@@ -297,6 +343,399 @@ static char *xpcui_copy_service_name(const void *endpoint, const char *fallback_
     return strdup(fallback_name ? fallback_name : "");
 }
 
+static char *xpcui_copy_cf_string(CFDictionaryRef dictionary, CFStringRef key) {
+    CFTypeRef value = CFDictionaryGetValue(dictionary, key);
+    if (!value || CFGetTypeID(value) != CFStringGetTypeID()) {
+        return NULL;
+    }
+    CFStringRef string = (CFStringRef)value;
+    CFIndex capacity = CFStringGetMaximumSizeForEncoding(
+        CFStringGetLength(string),
+        kCFStringEncodingUTF8
+    ) + 1;
+    char *copy = calloc((size_t)capacity, 1);
+    if (!copy || !CFStringGetCString(string, copy, capacity, kCFStringEncodingUTF8)) {
+        free(copy);
+        return NULL;
+    }
+    return copy;
+}
+
+static bool xpcui_cf_bool(CFDictionaryRef dictionary, CFStringRef key, bool fallback) {
+    CFTypeRef value = CFDictionaryGetValue(dictionary, key);
+    if (!value || CFGetTypeID(value) != CFBooleanGetTypeID()) {
+        return fallback;
+    }
+    return CFBooleanGetValue((CFBooleanRef)value);
+}
+
+static bool xpcui_string_has_maximum_length(const char *value, size_t maximum) {
+    return value && strnlen(value, maximum + 1) <= maximum;
+}
+
+static bool xpcui_key_path_is_valid(const char *key_path) {
+    if (!xpcui_string_has_maximum_length(key_path, XPCUI_INTERCEPTION_KEY_PATH_CAPACITY)
+        || key_path[0] == '\0') {
+        return false;
+    }
+    const char *cursor = key_path;
+    for (size_t depth = 0; depth < XPCUI_INTERCEPTION_KEY_PATH_DEPTH; depth++) {
+        const char *separator = strchr(cursor, '.');
+        size_t length = separator ? (size_t)(separator - cursor) : strlen(cursor);
+        if (length == 0 || length >= XPCUI_INTERCEPTION_KEY_SEGMENT_CAPACITY) {
+            return false;
+        }
+        if (!separator) {
+            return true;
+        }
+        cursor = separator + 1;
+    }
+    return false;
+}
+
+static bool xpcui_load_replacement_value(
+    CFDictionaryRef dictionary,
+    xpcui_interception_rule_t *rule
+) {
+    char *type = xpcui_copy_cf_string(dictionary, CFSTR("replacementType"));
+    if (!type) {
+        type = strdup("string");
+    }
+    rule->replacement_value = xpcui_copy_cf_string(dictionary, CFSTR("replacementValue"));
+    if (!rule->replacement_value) {
+        rule->replacement_value = xpcui_copy_cf_string(dictionary, CFSTR("replacementStringValue"));
+    }
+    if (!type || !xpcui_string_has_maximum_length(rule->replacement_value, XPCUI_INTERCEPTION_VALUE_CAPACITY)) {
+        free(type);
+        return false;
+    }
+
+    bool valid = true;
+    if (strcmp(type, "string") == 0) {
+        rule->replacement_type = XPCUI_INTERCEPTION_REPLACEMENT_STRING;
+    } else if (strcmp(type, "bool") == 0) {
+        rule->replacement_type = XPCUI_INTERCEPTION_REPLACEMENT_BOOL;
+        if (strcasecmp(rule->replacement_value, "true") == 0) {
+            rule->replacement_bool_value = true;
+        } else if (strcasecmp(rule->replacement_value, "false") == 0) {
+            rule->replacement_bool_value = false;
+        } else {
+            valid = false;
+        }
+    } else if (strcmp(type, "int64") == 0) {
+        rule->replacement_type = XPCUI_INTERCEPTION_REPLACEMENT_INT64;
+        char *end = NULL;
+        errno = 0;
+        rule->replacement_int64_value = strtoll(rule->replacement_value, &end, 10);
+        valid = errno == 0 && end && end[0] == '\0';
+    } else if (strcmp(type, "uint64") == 0) {
+        rule->replacement_type = XPCUI_INTERCEPTION_REPLACEMENT_UINT64;
+        char *end = NULL;
+        errno = 0;
+        rule->replacement_uint64_value = strtoull(rule->replacement_value, &end, 10);
+        valid = errno == 0
+            && end
+            && end[0] == '\0'
+            && rule->replacement_value[0] != '-';
+    } else if (strcmp(type, "double") == 0) {
+        rule->replacement_type = XPCUI_INTERCEPTION_REPLACEMENT_DOUBLE;
+        char *end = NULL;
+        errno = 0;
+        rule->replacement_double_value = strtod(rule->replacement_value, &end);
+        valid = errno == 0 && end && end[0] == '\0' && isfinite(rule->replacement_double_value);
+    } else {
+        valid = false;
+    }
+    free(type);
+    return valid;
+}
+
+static void xpcui_release_interception_rule(xpcui_interception_rule_t *rule) {
+    free(rule->id);
+    free(rule->service_name);
+    free(rule->direction);
+    free(rule->operation);
+    free(rule->match_key);
+    free(rule->match_string_value);
+    free(rule->replacement_key);
+    free(rule->replacement_value);
+    *rule = (xpcui_interception_rule_t){0};
+}
+
+static bool xpcui_load_interception_rule(CFDictionaryRef dictionary, xpcui_interception_rule_t *rule) {
+    if (!xpcui_cf_bool(dictionary, CFSTR("enabled"), true)) {
+        return false;
+    }
+    *rule = (xpcui_interception_rule_t){
+        .id = xpcui_copy_cf_string(dictionary, CFSTR("id")),
+        .service_name = xpcui_copy_cf_string(dictionary, CFSTR("serviceName")),
+        .direction = xpcui_copy_cf_string(dictionary, CFSTR("direction")),
+        .operation = xpcui_copy_cf_string(dictionary, CFSTR("operation")),
+        .match_key = xpcui_copy_cf_string(dictionary, CFSTR("matchKey")),
+        .match_string_value = xpcui_copy_cf_string(dictionary, CFSTR("matchStringValue")),
+        .replacement_key = xpcui_copy_cf_string(dictionary, CFSTR("replacementKey")),
+    };
+    bool valid = rule->id
+        && rule->service_name
+        && rule->direction
+        && rule->operation
+        && rule->match_key
+        && rule->match_string_value
+        && rule->replacement_key
+        && xpcui_load_replacement_value(dictionary, rule)
+        && rule->service_name[0] != '\0'
+        && rule->direction[0] != '\0'
+        && rule->operation[0] != '\0'
+        && xpcui_string_has_maximum_length(rule->id, XPCUI_INTERCEPTION_KEY_PATH_CAPACITY)
+        && xpcui_string_has_maximum_length(rule->service_name, XPCUI_INTERCEPTION_KEY_PATH_CAPACITY)
+        && xpcui_string_has_maximum_length(rule->direction, XPCUI_INTERCEPTION_KEY_SEGMENT_CAPACITY)
+        && xpcui_string_has_maximum_length(rule->operation, XPCUI_INTERCEPTION_KEY_PATH_CAPACITY)
+        && xpcui_string_has_maximum_length(rule->match_string_value, XPCUI_INTERCEPTION_VALUE_CAPACITY)
+        && (rule->match_key[0] == '\0' || xpcui_key_path_is_valid(rule->match_key))
+        && xpcui_key_path_is_valid(rule->replacement_key)
+        && ((rule->match_key[0] == '\0') == (rule->match_string_value[0] == '\0'));
+    if (!valid) {
+        xpcui_release_interception_rule(rule);
+    }
+    return valid;
+}
+
+static void xpcui_load_interception_rules(void) {
+    const char *path = getenv("XPCUI_INTERCEPTION_RULES_PATH");
+    if (!path || path[0] == '\0') {
+        return;
+    }
+    int file = open(path, O_RDONLY);
+    if (file < 0) {
+        return;
+    }
+    struct stat metadata = {0};
+    if (fstat(file, &metadata) != 0 || metadata.st_size <= 0 || metadata.st_size > 1024 * 1024) {
+        close(file);
+        return;
+    }
+    UInt8 *bytes = malloc((size_t)metadata.st_size);
+    if (!bytes) {
+        close(file);
+        return;
+    }
+    size_t offset = 0;
+    while (offset < (size_t)metadata.st_size) {
+        ssize_t count = read(file, bytes + offset, (size_t)metadata.st_size - offset);
+        if (count <= 0) {
+            free(bytes);
+            close(file);
+            return;
+        }
+        offset += (size_t)count;
+    }
+    close(file);
+    CFDataRef data = CFDataCreate(kCFAllocatorDefault, bytes, metadata.st_size);
+    free(bytes);
+    if (!data) {
+        return;
+    }
+    CFErrorRef error = NULL;
+    CFPropertyListRef property_list = CFPropertyListCreateWithData(
+        kCFAllocatorDefault,
+        data,
+        kCFPropertyListImmutable,
+        NULL,
+        &error
+    );
+    CFRelease(data);
+    if (!property_list || CFGetTypeID(property_list) != CFDictionaryGetTypeID()) {
+        if (property_list) CFRelease(property_list);
+        if (error) CFRelease(error);
+        return;
+    }
+    CFTypeRef rules_value = CFDictionaryGetValue((CFDictionaryRef)property_list, CFSTR("rules"));
+    if (rules_value && CFGetTypeID(rules_value) == CFArrayGetTypeID()) {
+        CFArrayRef rules = (CFArrayRef)rules_value;
+        CFIndex count = CFArrayGetCount(rules);
+        for (CFIndex index = 0;
+             index < count && xpcui_interception_rule_count < XPCUI_INTERCEPTION_RULE_CAPACITY;
+             index++) {
+            CFTypeRef value = CFArrayGetValueAtIndex(rules, index);
+            if (!value || CFGetTypeID(value) != CFDictionaryGetTypeID()) {
+                continue;
+            }
+            xpcui_interception_rule_t rule = {0};
+            if (xpcui_load_interception_rule((CFDictionaryRef)value, &rule)) {
+                xpcui_interception_rules[xpcui_interception_rule_count++] = rule;
+            }
+        }
+    }
+    CFRelease(property_list);
+    if (error) CFRelease(error);
+    atomic_store_explicit(
+        &xpcui_interception_enabled,
+        xpcui_interception_rule_count > 0,
+        memory_order_relaxed
+    );
+}
+
+static bool xpcui_next_key_path_segment(
+    const char **cursor,
+    char segment[XPCUI_INTERCEPTION_KEY_SEGMENT_CAPACITY],
+    bool *is_last
+) {
+    const char *separator = strchr(*cursor, '.');
+    size_t length = separator ? (size_t)(separator - *cursor) : strlen(*cursor);
+    if (length == 0 || length >= XPCUI_INTERCEPTION_KEY_SEGMENT_CAPACITY) {
+        return false;
+    }
+    memcpy(segment, *cursor, length);
+    segment[length] = '\0';
+    *is_last = !separator;
+    *cursor = separator ? separator + 1 : *cursor + length;
+    return true;
+}
+
+static xpc_object_t xpcui_dictionary_get_key_path(xpc_object_t dictionary, const char *key_path) {
+    xpc_object_t current = dictionary;
+    const char *cursor = key_path;
+    for (size_t depth = 0; depth < XPCUI_INTERCEPTION_KEY_PATH_DEPTH; depth++) {
+        char segment[XPCUI_INTERCEPTION_KEY_SEGMENT_CAPACITY] = {0};
+        bool is_last = false;
+        if (!current
+            || xpc_get_type(current) != XPC_TYPE_DICTIONARY
+            || !xpcui_next_key_path_segment(&cursor, segment, &is_last)) {
+            return NULL;
+        }
+        current = xpc_dictionary_get_value(current, segment);
+        if (is_last) {
+            return current;
+        }
+    }
+    return NULL;
+}
+
+static bool xpcui_dictionary_has_key_path_parent(xpc_object_t dictionary, const char *key_path) {
+    xpc_object_t current = dictionary;
+    const char *cursor = key_path;
+    for (size_t depth = 0; depth < XPCUI_INTERCEPTION_KEY_PATH_DEPTH; depth++) {
+        char segment[XPCUI_INTERCEPTION_KEY_SEGMENT_CAPACITY] = {0};
+        bool is_last = false;
+        if (!current
+            || xpc_get_type(current) != XPC_TYPE_DICTIONARY
+            || !xpcui_next_key_path_segment(&cursor, segment, &is_last)) {
+            return false;
+        }
+        if (is_last) {
+            return true;
+        }
+        current = xpc_dictionary_get_value(current, segment);
+    }
+    return false;
+}
+
+static bool xpcui_dictionary_set_replacement(
+    xpc_object_t dictionary,
+    const xpcui_interception_rule_t *rule
+) {
+    xpc_object_t current = dictionary;
+    const char *cursor = rule->replacement_key;
+    for (size_t depth = 0; depth < XPCUI_INTERCEPTION_KEY_PATH_DEPTH; depth++) {
+        char segment[XPCUI_INTERCEPTION_KEY_SEGMENT_CAPACITY] = {0};
+        bool is_last = false;
+        if (!current
+            || xpc_get_type(current) != XPC_TYPE_DICTIONARY
+            || !xpcui_next_key_path_segment(&cursor, segment, &is_last)) {
+            return false;
+        }
+        if (is_last) {
+            switch (rule->replacement_type) {
+                case XPCUI_INTERCEPTION_REPLACEMENT_STRING:
+                    xpc_dictionary_set_string(current, segment, rule->replacement_value);
+                    return true;
+                case XPCUI_INTERCEPTION_REPLACEMENT_BOOL:
+                    xpc_dictionary_set_bool(current, segment, rule->replacement_bool_value);
+                    return true;
+                case XPCUI_INTERCEPTION_REPLACEMENT_INT64:
+                    xpc_dictionary_set_int64(current, segment, rule->replacement_int64_value);
+                    return true;
+                case XPCUI_INTERCEPTION_REPLACEMENT_UINT64:
+                    xpc_dictionary_set_uint64(current, segment, rule->replacement_uint64_value);
+                    return true;
+                case XPCUI_INTERCEPTION_REPLACEMENT_DOUBLE:
+                    xpc_dictionary_set_double(current, segment, rule->replacement_double_value);
+                    return true;
+            }
+        }
+        xpc_object_t child = xpc_dictionary_get_value(current, segment);
+        if (!child || xpc_get_type(child) != XPC_TYPE_DICTIONARY) {
+            return false;
+        }
+        xpc_object_t child_copy = xpc_copy(child);
+        if (!child_copy) {
+            return false;
+        }
+        xpc_dictionary_set_value(current, segment, child_copy);
+        current = child_copy;
+        xpc_release(child_copy);
+    }
+    return false;
+}
+
+static xpcui_interception_result_t xpcui_apply_interception(
+    xpc_object_t message,
+    const char *direction,
+    const char *operation,
+    const void *endpoint,
+    const char *fallback_name
+) {
+    xpcui_interception_result_t result = {.message = message};
+    if (!message
+        || !atomic_load_explicit(&xpcui_interception_enabled, memory_order_relaxed)
+        || xpc_get_type(message) != XPC_TYPE_DICTIONARY) {
+        return result;
+    }
+    char *service_name = xpcui_copy_service_name(endpoint, fallback_name);
+    if (!service_name) {
+        return result;
+    }
+    for (size_t index = 0; index < xpcui_interception_rule_count; index++) {
+        xpcui_interception_rule_t *rule = &xpcui_interception_rules[index];
+        if (strcmp(rule->service_name, service_name) != 0
+            || strcmp(rule->direction, direction) != 0
+            || strcmp(rule->operation, operation) != 0) {
+            continue;
+        }
+        if (rule->match_key[0] != '\0') {
+            xpc_object_t value = xpcui_dictionary_get_key_path(result.message, rule->match_key);
+            if (!value
+                || xpc_get_type(value) != XPC_TYPE_STRING
+                || strcmp(xpc_string_get_string_ptr(value), rule->match_string_value) != 0) {
+                continue;
+            }
+        }
+        if (!xpcui_dictionary_has_key_path_parent(result.message, rule->replacement_key)) {
+            continue;
+        }
+        if (!result.owns_message) {
+            result.message = xpc_copy(message);
+            if (!result.message) {
+                break;
+            }
+            result.owns_message = true;
+        }
+        if (xpcui_dictionary_set_replacement(result.message, rule)
+            && result.rule_count < XPCUI_INTERCEPTION_RULE_CAPACITY) {
+            result.rule_ids[result.rule_count++] = rule->id;
+        }
+    }
+    free(service_name);
+    return result;
+}
+
+static void xpcui_release_interception_result(xpcui_interception_result_t *result) {
+    if (result->owns_message && result->message) {
+        xpc_release(result->message);
+    }
+    *result = (xpcui_interception_result_t){0};
+}
+
 static void xpcui_release_pending(xpcui_pending_event_t *event);
 
 static xpc_object_t xpcui_copy_payload_snapshot(xpc_object_t payload, bool *used_fallback) {
@@ -312,12 +751,41 @@ static xpc_object_t xpcui_copy_payload_snapshot(xpc_object_t payload, bool *used
     return xpc_retain(payload);
 }
 
-static void xpcui_enqueue_named(
+static char **xpcui_copy_interception_rule_ids(
+    const char * const *rule_ids,
+    size_t rule_count,
+    size_t *copied_rule_count
+) {
+    *copied_rule_count = 0;
+    if (!rule_ids || rule_count == 0) {
+        return NULL;
+    }
+    char **copies = calloc(rule_count, sizeof(char *));
+    if (!copies) {
+        return NULL;
+    }
+    for (size_t index = 0; index < rule_count; index++) {
+        copies[index] = strdup(rule_ids[index]);
+        if (!copies[index]) {
+            break;
+        }
+        (*copied_rule_count)++;
+    }
+    if (*copied_rule_count == 0) {
+        free(copies);
+        return NULL;
+    }
+    return copies;
+}
+
+static void xpcui_enqueue_named_with_interception(
     xpc_object_t payload,
     const char *direction,
     const char *operation,
     const void *endpoint,
-    const char *fallback_name
+    const char *fallback_name,
+    const char * const *interception_rule_ids,
+    size_t interception_rule_count
 ) {
     if (!xpcui_enabled) {
         return;
@@ -333,6 +801,11 @@ static void xpcui_enqueue_named(
         .timestamp = xpcui_monotonic_nanoseconds(),
         .thread_id = xpcui_thread_id(),
     };
+    event.interception_rule_ids = xpcui_copy_interception_rule_ids(
+        interception_rule_ids,
+        interception_rule_count,
+        &event.interception_rule_count
+    );
     if (pthread_mutex_trylock(&xpcui_queue_lock) != 0) {
         xpcui_release_pending(&event);
         atomic_fetch_add_explicit(&xpcui_dropped, 1, memory_order_relaxed);
@@ -351,6 +824,16 @@ static void xpcui_enqueue_named(
     pthread_mutex_unlock(&xpcui_queue_lock);
 }
 
+static void xpcui_enqueue_named(
+    xpc_object_t payload,
+    const char *direction,
+    const char *operation,
+    const void *endpoint,
+    const char *fallback_name
+) {
+    xpcui_enqueue_named_with_interception(payload, direction, operation, endpoint, fallback_name, NULL, 0);
+}
+
 static void xpcui_enqueue(xpc_object_t payload, const char *direction, const char *operation, xpc_connection_t connection) {
     if (!xpcui_enabled) {
         return;
@@ -359,13 +842,51 @@ static void xpcui_enqueue(xpc_object_t payload, const char *direction, const cha
     xpcui_enqueue_named(payload, direction, operation, connection, fallback_name);
 }
 
+static void xpcui_enqueue_intercepted(
+    xpc_object_t payload,
+    const char *direction,
+    const char *operation,
+    xpc_connection_t connection,
+    const char * const *interception_rule_ids,
+    size_t interception_rule_count
+) {
+    if (!xpcui_enabled) {
+        return;
+    }
+    const char *fallback_name = connection ? xpc_connection_get_name(connection) : NULL;
+    xpcui_enqueue_named_with_interception(
+        payload,
+        direction,
+        operation,
+        connection,
+        fallback_name,
+        interception_rule_ids,
+        interception_rule_count
+    );
+}
+
 void xpcui_trace_optional_lifecycle(const char *operation, const char *service_name) {
     xpcui_enqueue_named(NULL, "lifecycle", operation, NULL, service_name);
 }
 
 #if defined(XPC_TYPE_SESSION)
-static void xpcui_enqueue_session(xpc_object_t payload, const char *direction, const char *operation, xpc_session_t session) {
-    xpcui_enqueue_named(payload, direction, operation, session, NULL);
+static void xpcui_enqueue_intercepted_session(
+    xpc_object_t payload,
+    const char *direction,
+    const char *operation,
+    xpc_session_t session,
+    const char * const *interception_rule_ids,
+    size_t interception_rule_count
+) {
+    xpcui_enqueue_named_with_interception(
+        payload,
+        direction,
+        operation,
+        session,
+        NULL,
+        interception_rule_ids,
+        interception_rule_count
+    );
 }
 
 static void xpcui_enqueue_session_error(
@@ -505,11 +1026,20 @@ static char *xpcui_event_json(xpcui_pending_event_t *event, size_t *length) {
     } else {
         xpcui_buffer_append_bytes(&buffer, payload.data, payload.length);
     }
+    xpcui_buffer_append(&buffer, ",\"diagnostics\":[");
+    bool has_diagnostic = false;
     if (event->payload_snapshot_fallback) {
-        xpcui_buffer_append(&buffer, ",\"diagnostics\":[\"payload-snapshot-fallback\"]");
-    } else {
-        xpcui_buffer_append(&buffer, ",\"diagnostics\":[]");
+        xpcui_buffer_append(&buffer, "\"payload-snapshot-fallback\"");
+        has_diagnostic = true;
     }
+    for (size_t index = 0; index < event->interception_rule_count; index++) {
+        if (has_diagnostic) xpcui_buffer_append(&buffer, ",");
+        char diagnostic[XPCUI_INTERCEPTION_KEY_PATH_CAPACITY + 32] = {0};
+        snprintf(diagnostic, sizeof(diagnostic), "intercepted-rule:%s", event->interception_rule_ids[index]);
+        xpcui_buffer_append_json_string(&buffer, diagnostic);
+        has_diagnostic = true;
+    }
+    xpcui_buffer_append(&buffer, "]");
     xpcui_buffer_append_format(
         &buffer,
         ",\"droppedEventCount\":%llu}",
@@ -544,6 +1074,10 @@ static void xpcui_release_pending(xpcui_pending_event_t *event) {
     free(event->direction);
     free(event->operation);
     free(event->service_name);
+    for (size_t index = 0; index < event->interception_rule_count; index++) {
+        free(event->interception_rule_ids[index]);
+    }
+    free(event->interception_rule_ids);
 }
 
 static void *xpcui_worker(void *context) {
@@ -593,6 +1127,7 @@ static void xpcui_initialize(void) {
     if (!xpcui_session_id || !xpcui_auth_token || !xpcui_socket_path) {
         return;
     }
+    xpcui_load_interception_rules();
     xpcui_enabled = true;
     pthread_t worker;
     if (pthread_create(&worker, NULL, xpcui_worker, NULL) == 0) {
@@ -619,14 +1154,44 @@ xpc_connection_t xpcui_connection_create_mach_service(const char *name, dispatch
 
 void xpcui_connection_set_event_handler(xpc_connection_t connection, xpc_handler_t handler) {
     xpc_connection_set_event_handler(connection, ^(xpc_object_t event) {
-        xpcui_enqueue(event, "incoming", "receive", connection);
-        handler(event);
+        xpcui_interception_result_t interception = xpcui_apply_interception(
+            event,
+            "incoming",
+            "receive",
+            connection,
+            xpc_connection_get_name(connection)
+        );
+        xpcui_enqueue_intercepted(
+            interception.message,
+            "incoming",
+            "receive",
+            connection,
+            interception.rule_ids,
+            interception.rule_count
+        );
+        handler(interception.message);
+        xpcui_release_interception_result(&interception);
     });
 }
 
 void xpcui_connection_send_message(xpc_connection_t connection, xpc_object_t message) {
-    xpcui_enqueue(message, "outgoing", "send", connection);
-    xpc_connection_send_message(connection, message);
+    xpcui_interception_result_t interception = xpcui_apply_interception(
+        message,
+        "outgoing",
+        "send",
+        connection,
+        xpc_connection_get_name(connection)
+    );
+    xpcui_enqueue_intercepted(
+        interception.message,
+        "outgoing",
+        "send",
+        connection,
+        interception.rule_ids,
+        interception.rule_count
+    );
+    xpc_connection_send_message(connection, interception.message);
+    xpcui_release_interception_result(&interception);
 }
 
 void xpcui_connection_send_message_with_reply(
@@ -635,17 +1200,81 @@ void xpcui_connection_send_message_with_reply(
     dispatch_queue_t reply_queue,
     xpc_handler_t handler
 ) {
-    xpcui_enqueue(message, "outgoing", "send-with-reply", connection);
-    xpc_connection_send_message_with_reply(connection, message, reply_queue, ^(xpc_object_t reply) {
-        xpcui_enqueue(reply, "incoming", "reply", connection);
-        handler(reply);
+    xpcui_interception_result_t interception = xpcui_apply_interception(
+        message,
+        "outgoing",
+        "send-with-reply",
+        connection,
+        xpc_connection_get_name(connection)
+    );
+    xpcui_enqueue_intercepted(
+        interception.message,
+        "outgoing",
+        "send-with-reply",
+        connection,
+        interception.rule_ids,
+        interception.rule_count
+    );
+    xpc_connection_send_message_with_reply(connection, interception.message, reply_queue, ^(xpc_object_t reply) {
+        xpcui_interception_result_t reply_interception = xpcui_apply_interception(
+            reply,
+            "incoming",
+            "reply",
+            connection,
+            xpc_connection_get_name(connection)
+        );
+        xpcui_enqueue_intercepted(
+            reply_interception.message,
+            "incoming",
+            "reply",
+            connection,
+            reply_interception.rule_ids,
+            reply_interception.rule_count
+        );
+        handler(reply_interception.message);
+        xpcui_release_interception_result(&reply_interception);
     });
+    xpcui_release_interception_result(&interception);
 }
 
 xpc_object_t xpcui_connection_send_message_with_reply_sync(xpc_connection_t connection, xpc_object_t message) {
-    xpcui_enqueue(message, "outgoing", "send-with-reply-sync", connection);
-    xpc_object_t reply = xpc_connection_send_message_with_reply_sync(connection, message);
-    xpcui_enqueue(reply, "incoming", "reply-sync", connection);
+    xpcui_interception_result_t interception = xpcui_apply_interception(
+        message,
+        "outgoing",
+        "send-with-reply-sync",
+        connection,
+        xpc_connection_get_name(connection)
+    );
+    xpcui_enqueue_intercepted(
+        interception.message,
+        "outgoing",
+        "send-with-reply-sync",
+        connection,
+        interception.rule_ids,
+        interception.rule_count
+    );
+    xpc_object_t reply = xpc_connection_send_message_with_reply_sync(connection, interception.message);
+    xpcui_release_interception_result(&interception);
+    xpcui_interception_result_t reply_interception = xpcui_apply_interception(
+        reply,
+        "incoming",
+        "reply-sync",
+        connection,
+        xpc_connection_get_name(connection)
+    );
+    xpcui_enqueue_intercepted(
+        reply_interception.message,
+        "incoming",
+        "reply-sync",
+        connection,
+        reply_interception.rule_ids,
+        reply_interception.rule_count
+    );
+    if (reply_interception.owns_message) {
+        xpc_release(reply);
+        reply = reply_interception.message;
+        reply_interception.owns_message = false;
+    }
     return reply;
 }
 
@@ -681,14 +1310,44 @@ void xpcui_session_set_incoming_message_handler(
     xpc_session_incoming_message_handler_t handler
 ) {
     xpc_session_set_incoming_message_handler(session, ^(xpc_object_t message) {
-        xpcui_enqueue_session(message, "incoming", "session-receive", session);
-        handler(message);
+        xpcui_interception_result_t interception = xpcui_apply_interception(
+            message,
+            "incoming",
+            "session-receive",
+            session,
+            NULL
+        );
+        xpcui_enqueue_intercepted_session(
+            interception.message,
+            "incoming",
+            "session-receive",
+            session,
+            interception.rule_ids,
+            interception.rule_count
+        );
+        handler(interception.message);
+        xpcui_release_interception_result(&interception);
     });
 }
 
 xpc_rich_error_t xpcui_session_send_message(xpc_session_t session, xpc_object_t message) {
-    xpcui_enqueue_session(message, "outgoing", "session-send", session);
-    xpc_rich_error_t error = xpc_session_send_message(session, message);
+    xpcui_interception_result_t interception = xpcui_apply_interception(
+        message,
+        "outgoing",
+        "session-send",
+        session,
+        NULL
+    );
+    xpcui_enqueue_intercepted_session(
+        interception.message,
+        "outgoing",
+        "session-send",
+        session,
+        interception.rule_ids,
+        interception.rule_count
+    );
+    xpc_rich_error_t error = xpc_session_send_message(session, interception.message);
+    xpcui_release_interception_result(&interception);
     xpcui_enqueue_session_error(error, "session-send-error", session, NULL);
     return error;
 }
@@ -698,12 +1357,44 @@ void xpcui_session_send_message_with_reply_async(
     xpc_object_t message,
     xpc_session_reply_handler_t reply_handler
 ) {
-    xpcui_enqueue_session(message, "outgoing", "session-send-with-reply", session);
-    xpc_session_send_message_with_reply_async(session, message, ^(xpc_object_t reply, xpc_rich_error_t error) {
-        if (reply) xpcui_enqueue_session(reply, "incoming", "session-reply", session);
+    xpcui_interception_result_t interception = xpcui_apply_interception(
+        message,
+        "outgoing",
+        "session-send-with-reply",
+        session,
+        NULL
+    );
+    xpcui_enqueue_intercepted_session(
+        interception.message,
+        "outgoing",
+        "session-send-with-reply",
+        session,
+        interception.rule_ids,
+        interception.rule_count
+    );
+    xpc_session_send_message_with_reply_async(session, interception.message, ^(xpc_object_t reply, xpc_rich_error_t error) {
+        xpcui_interception_result_t reply_interception = xpcui_apply_interception(
+            reply,
+            "incoming",
+            "session-reply",
+            session,
+            NULL
+        );
+        if (reply) {
+            xpcui_enqueue_intercepted_session(
+                reply_interception.message,
+                "incoming",
+                "session-reply",
+                session,
+                reply_interception.rule_ids,
+                reply_interception.rule_count
+            );
+        }
         xpcui_enqueue_session_error(error, "session-reply-error", session, NULL);
-        reply_handler(reply, error);
+        reply_handler(reply_interception.message, error);
+        xpcui_release_interception_result(&reply_interception);
     });
+    xpcui_release_interception_result(&interception);
 }
 
 xpc_object_t xpcui_session_send_message_with_reply_sync(
@@ -711,9 +1402,45 @@ xpc_object_t xpcui_session_send_message_with_reply_sync(
     xpc_object_t message,
     xpc_rich_error_t *error_out
 ) {
-    xpcui_enqueue_session(message, "outgoing", "session-send-with-reply-sync", session);
-    xpc_object_t reply = xpc_session_send_message_with_reply_sync(session, message, error_out);
-    if (reply) xpcui_enqueue_session(reply, "incoming", "session-reply-sync", session);
+    xpcui_interception_result_t interception = xpcui_apply_interception(
+        message,
+        "outgoing",
+        "session-send-with-reply-sync",
+        session,
+        NULL
+    );
+    xpcui_enqueue_intercepted_session(
+        interception.message,
+        "outgoing",
+        "session-send-with-reply-sync",
+        session,
+        interception.rule_ids,
+        interception.rule_count
+    );
+    xpc_object_t reply = xpc_session_send_message_with_reply_sync(session, interception.message, error_out);
+    xpcui_release_interception_result(&interception);
+    xpcui_interception_result_t reply_interception = xpcui_apply_interception(
+        reply,
+        "incoming",
+        "session-reply-sync",
+        session,
+        NULL
+    );
+    if (reply) {
+        xpcui_enqueue_intercepted_session(
+            reply_interception.message,
+            "incoming",
+            "session-reply-sync",
+            session,
+            reply_interception.rule_ids,
+            reply_interception.rule_count
+        );
+    }
+    if (reply_interception.owns_message) {
+        xpc_release(reply);
+        reply = reply_interception.message;
+        reply_interception.owns_message = false;
+    }
     if (error_out) xpcui_enqueue_session_error(*error_out, "session-reply-sync-error", session, NULL);
     return reply;
 }

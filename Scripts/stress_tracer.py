@@ -14,6 +14,7 @@ import subprocess
 import tempfile
 import threading
 import time
+import plistlib
 
 
 def read_exact(connection: socket.socket, byte_count: int) -> bytes | None:
@@ -49,6 +50,11 @@ def main() -> int:
     parser.add_argument("--events-per-second", type=int, default=25_000)
     parser.add_argument("--duration-seconds", type=int, default=60)
     parser.add_argument("--max-rss-mib", type=int, default=128)
+    parser.add_argument(
+        "--interception",
+        action="store_true",
+        help="exercise the public XPC send hook with an active nested scalar rewrite",
+    )
     args = parser.parse_args()
 
     products_dir = args.products_dir.resolve()
@@ -63,6 +69,32 @@ def main() -> int:
         socket_path = root / "capture.sock"
         blobs_path = root / "blobs"
         blobs_path.mkdir(mode=0o700)
+        rules_path = root / "interception-rules.plist"
+        if args.interception:
+            with rules_path.open("wb") as rules_file:
+                plistlib.dump(
+                    {
+                        "schemaVersion": 2,
+                        "rules": [
+                            {
+                                "id": "stress-nested-pid-rule",
+                                "name": "Rewrite nested stress PID",
+                                "enabled": True,
+                                "serviceName": "com.jonluca.xpcui.fixture.mach-service",
+                                "direction": "outgoing",
+                                "operation": "send",
+                                "matchKey": "nested.transport",
+                                "matchStringValue": "Process",
+                                "replacementKey": "nested.pid",
+                                "replacementType": "int64",
+                                "replacementValue": "4242",
+                            }
+                        ],
+                    },
+                    rules_file,
+                    fmt=plistlib.FMT_BINARY,
+                )
+            rules_path.chmod(0o600)
         auth_token = secrets.token_hex(32)
         server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         server.bind(str(socket_path))
@@ -97,10 +129,12 @@ def main() -> int:
                 "XPCUI_BLOBS_PATH": str(blobs_path),
             }
         )
+        if args.interception:
+            environment["XPCUI_INTERCEPTION_RULES_PATH"] = str(rules_path)
         process = subprocess.Popen(
             [
                 str(fixture),
-                "--stress-lifecycle",
+                "--stress-xpc" if args.interception else "--stress-lifecycle",
                 str(args.events_per_second),
                 str(args.duration_seconds),
             ],
@@ -141,6 +175,7 @@ def main() -> int:
                 "maximumRSSMiB": round(maximum_rss_mib, 3),
                 "maximumAllowedRSSMiB": args.max_rss_mib,
                 "authenticatedTransport": authentication.get("authToken") == auth_token,
+                "interceptionEnabled": args.interception,
                 "fixtureStatus": process.returncode,
                 "fixtureStderr": stderr.strip(),
             },

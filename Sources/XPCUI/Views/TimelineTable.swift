@@ -5,9 +5,13 @@ struct TimelineTable: NSViewRepresentable {
     let events: [CaptureEventEnvelope]
     let generation: Int
     @Binding var selection: CaptureEventEnvelope.ID?
+    let onPrepareInterceptionRule: (CaptureEventEnvelope) -> Void
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(selection: $selection)
+        Coordinator(
+            selection: $selection,
+            onPrepareInterceptionRule: onPrepareInterceptionRule
+        )
     }
 
     func makeNSView(context: Context) -> NSScrollView {
@@ -17,10 +21,14 @@ struct TimelineTable: NSViewRepresentable {
         table.headerView = NSTableHeaderView()
         table.delegate = context.coordinator
         table.dataSource = context.coordinator
+        let menu = NSMenu()
+        menu.delegate = context.coordinator
+        table.menu = menu
 
         addColumn("time", title: "Time", width: 92, to: table)
         addColumn("pid", title: "PID", width: 58, to: table)
         addColumn("category", title: "Kind", width: 86, to: table)
+        addColumn("mutation", title: "Mut.", width: 44, to: table)
         addColumn("operation", title: "Operation", width: 155, to: table)
         addColumn("service", title: "Service", width: 220, to: table)
         addColumn("summary", title: "Summary", width: 420, to: table)
@@ -35,6 +43,7 @@ struct TimelineTable: NSViewRepresentable {
 
     func updateNSView(_ scrollView: NSScrollView, context: Context) {
         context.coordinator.selection = $selection
+        context.coordinator.onPrepareInterceptionRule = onPrepareInterceptionRule
         context.coordinator.update(events: events, generation: generation)
         if let selection, let row = events.firstIndex(where: { $0.id == selection }) {
             context.coordinator.tableView?.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
@@ -48,14 +57,20 @@ struct TimelineTable: NSViewRepresentable {
         table.addTableColumn(column)
     }
 
-    final class Coordinator: NSObject, NSTableViewDataSource, NSTableViewDelegate {
+    final class Coordinator: NSObject, NSTableViewDataSource, NSTableViewDelegate, NSMenuDelegate {
         var events: [CaptureEventEnvelope] = []
         var generation = 0
         var selection: Binding<CaptureEventEnvelope.ID?>
+        var onPrepareInterceptionRule: (CaptureEventEnvelope) -> Void
         weak var tableView: NSTableView?
+        private var contextMenuEvent: CaptureEventEnvelope?
 
-        init(selection: Binding<CaptureEventEnvelope.ID?>) {
+        init(
+            selection: Binding<CaptureEventEnvelope.ID?>,
+            onPrepareInterceptionRule: @escaping (CaptureEventEnvelope) -> Void
+        ) {
             self.selection = selection
+            self.onPrepareInterceptionRule = onPrepareInterceptionRule
         }
 
         func update(events nextEvents: [CaptureEventEnvelope], generation nextGeneration: Int) {
@@ -92,6 +107,7 @@ struct TimelineTable: NSViewRepresentable {
             case "time": text = event.timestampText
             case "pid": text = String(event.pid)
             case "category": text = event.category
+            case "mutation": text = event.isIntercepted ? "yes" : ""
             case "operation": text = event.operation
             case "service": text = event.serviceName ?? ""
             default: text = event.summary
@@ -112,6 +128,9 @@ struct TimelineTable: NSViewRepresentable {
                 view.textField = field
             }
             view.textField?.stringValue = text
+            view.textField?.textColor = identifier.rawValue == "mutation" && event.isIntercepted
+                ? .systemOrange
+                : .labelColor
             return view
         }
 
@@ -121,6 +140,39 @@ struct TimelineTable: NSViewRepresentable {
                 return
             }
             selection.wrappedValue = events[row].id
+        }
+
+        func menuNeedsUpdate(_ menu: NSMenu) {
+            menu.removeAllItems()
+            contextMenuEvent = nil
+            guard
+                let tableView,
+                tableView.clickedRow >= 0,
+                tableView.clickedRow < events.count
+            else {
+                return
+            }
+            let event = events[tableView.clickedRow]
+            tableView.selectRowIndexes(IndexSet(integer: tableView.clickedRow), byExtendingSelection: false)
+            guard InterceptionRule.prepared(from: event) != nil else {
+                let item = NSMenuItem(title: "Interception Rule Unavailable", action: nil, keyEquivalent: "")
+                item.isEnabled = false
+                menu.addItem(item)
+                return
+            }
+            contextMenuEvent = event
+            let item = NSMenuItem(
+                title: "Prepare Interception Rule...",
+                action: #selector(prepareInterceptionRule(_:)),
+                keyEquivalent: ""
+            )
+            item.target = self
+            menu.addItem(item)
+        }
+
+        @objc private func prepareInterceptionRule(_ sender: NSMenuItem) {
+            guard let contextMenuEvent else { return }
+            onPrepareInterceptionRule(contextMenuEvent)
         }
     }
 }

@@ -1,19 +1,47 @@
+import AppKit
 import SwiftUI
 
 struct PayloadView: View {
     let event: CaptureEventEnvelope?
     let blobStore: BlobStore
+    var onDraftInterceptionRule: ((CaptureEventEnvelope) -> Void)?
 
     var body: some View {
         Group {
             if let event {
                 List {
+                    Section("Actions") {
+                        Button("Copy Event JSON", systemImage: "doc.on.doc") {
+                            let pasteboard = NSPasteboard.general
+                            pasteboard.clearContents()
+                            pasteboard.setString(
+                                (try? event.prettyPrintedJSONString()) ?? "",
+                                forType: .string
+                            )
+                        }
+                        if
+                            InterceptionRule.prepared(from: event) != nil,
+                            let onDraftInterceptionRule
+                        {
+                            Button("Draft Interception Rule", systemImage: "bolt.badge.plus") {
+                                onDraftInterceptionRule(event)
+                            }
+                        }
+                    }
                     Section("Event") {
                         LabeledContent("Operation", value: event.operation)
                         LabeledContent("PID", value: String(event.pid))
+                        LabeledContent("Parent PID", value: String(event.parentPID))
                         LabeledContent("Direction", value: event.direction)
+                        LabeledContent("Source", value: event.source)
+                        LabeledContent("Thread", value: String(event.threadID))
                         if let serviceName = event.serviceName {
                             LabeledContent("Service", value: serviceName)
+                        }
+                    }
+                    if !event.appliedInterceptionRuleIDs.isEmpty {
+                        Section("Applied Interception Rules") {
+                            ForEach(event.appliedInterceptionRuleIDs, id: \.self, content: Text.init)
                         }
                     }
                     if let payload = event.payload {

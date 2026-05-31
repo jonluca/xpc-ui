@@ -13,6 +13,10 @@ final class DiagnosticsServiceTests: XCTestCase {
             DiagnosticsService.helperDetail(for: .notFound, bundledPlistAvailable: true)
                 .contains("signed, notarized app bundle")
         )
+        XCTAssertTrue(
+            DiagnosticsService.helperDetail(for: .notFound, bundledPlistAvailable: true)
+                .contains("/Applications")
+        )
     }
 
     func testMissingHelperPlistReportsUnavailable() {

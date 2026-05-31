@@ -76,6 +76,13 @@ final class EventStorePerformanceTests: XCTestCase {
         XCTAssertFalse(filter.matches(syntheticEvent(category: "syscall")))
     }
 
+    func testInterceptedPresetKeepsOnlyMutatedEvents() {
+        let filter = TimelineFilter(searchText: "", category: "all", processID: nil, preset: .intercepted)
+
+        XCTAssertTrue(filter.matches(syntheticEvent(diagnostics: ["intercepted-rule:test-rule"])))
+        XCTAssertFalse(filter.matches(syntheticEvent()))
+    }
+
     func testTimelineFilterIntersectsProcessCategoryAndSearch() {
         let filter = TimelineFilter(searchText: "lookup", category: "xpc", processID: 42, preset: .all)
 
@@ -88,7 +95,8 @@ final class EventStorePerformanceTests: XCTestCase {
     private func syntheticEvent(
         pid: Int32 = 2,
         category: String = "xpc",
-        summary: String = "synthetic event"
+        summary: String = "synthetic event",
+        diagnostics: [String] = []
     ) -> CaptureEventEnvelope {
         CaptureEventEnvelope(
             schemaVersion: CaptureEventEnvelope.currentSchemaVersion,
@@ -105,7 +113,7 @@ final class EventStorePerformanceTests: XCTestCase {
             serviceName: "com.example.synthetic",
             summary: summary,
             payload: nil,
-            diagnostics: [],
+            diagnostics: diagnostics,
             droppedEventCount: 0
         )
     }
