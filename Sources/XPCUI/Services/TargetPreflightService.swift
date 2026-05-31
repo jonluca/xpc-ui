@@ -1,6 +1,23 @@
 import Foundation
+import Security
 
 enum TargetPreflightService {
+    struct SigningMetadata: Equatable {
+        let flags: UInt32
+        let teamIdentifier: String?
+        let allowsDYLDEnvironmentVariables: Bool
+        let disablesLibraryValidation: Bool
+        let isPlatformBinary: Bool
+    }
+
+    struct InjectionRestriction: Equatable {
+        let detail: String
+    }
+
+    // Security.framework exposes these constants to C but not Swift.
+    static let libraryValidationFlag: UInt32 = 0x2000
+    static let hardenedRuntimeFlag: UInt32 = 0x10000
+
     static func inspect(
         url: URL,
         tracerURL: URL? = Bundle.main.url(forResource: "XPCTrace", withExtension: "dylib"),
@@ -12,14 +29,24 @@ enum TargetPreflightService {
         let resolution = resolveExecutable(url: url, targetKind: targetKind)
         let targetArchitectures = resolution.executableURL.map(architectures(at:)) ?? []
         let tracerArchitectures = tracerURL.map(architectures(at:)) ?? []
-        let isProtected = resolution.executableURL.map(isProtectedTarget(at:)) ?? false
+        let tracerSigningMetadata = tracerURL.flatMap { signingMetadata(at: $0) }
+        let restriction: InjectionRestriction?
+        if let executableURL = resolution.executableURL {
+            restriction = Self.injectionRestriction(
+                path: executableURL.standardizedFileURL.path,
+                targetSigningMetadata: signingMetadata(at: executableURL),
+                tracerSigningMetadata: tracerSigningMetadata
+            )
+        } else {
+            restriction = nil
+        }
         let hasCompatibleArchitecture = targetArchitectures.isEmpty
             || !Set(targetArchitectures).intersection(tracerArchitectures).isEmpty
         let shouldInjectTracer = deepCaptureEnabled
             && tracerURL != nil
             && !tracerArchitectures.isEmpty
             && hasCompatibleArchitecture
-            && !isProtected
+            && restriction == nil
         let checks = [
             resolution.check,
             architectureCheck(
@@ -32,9 +59,9 @@ enum TargetPreflightService {
                 deepCaptureEnabled: deepCaptureEnabled,
                 hasCompatibleArchitecture: hasCompatibleArchitecture,
                 hasReadableTracerSlice: !tracerArchitectures.isEmpty,
-                isProtected: isProtected
+                injectionRestriction: restriction
             ),
-            protectedTargetCheck(isProtected: isProtected),
+            protectedTargetCheck(injectionRestriction: restriction),
         ]
 
         return TargetPreflight(
@@ -114,15 +141,41 @@ enum TargetPreflightService {
         )
     }
 
-    static func isProtectedTarget(at executableURL: URL) -> Bool {
-        let path = executableURL.standardizedFileURL.path
+    static func injectionRestriction(
+        path: String,
+        targetSigningMetadata: SigningMetadata?,
+        tracerSigningMetadata: SigningMetadata?
+    ) -> InjectionRestriction? {
         let protectedPrefixes = ["/System/", "/usr/bin/", "/bin/", "/sbin/"]
         if protectedPrefixes.contains(where: path.hasPrefix) {
-            return true
+            return InjectionRestriction(
+                detail: "The target is in a protected system location. SIP and runtime protections are expected to reject DYLD_INSERT_LIBRARIES."
+            )
         }
-        return commandOutput("/usr/bin/codesign", arguments: ["-dv", "--verbose=4", path])
-            .output
-            .localizedCaseInsensitiveContains("PlatformIdentifier=")
+        guard let targetSigningMetadata else { return nil }
+        if targetSigningMetadata.isPlatformBinary {
+            return InjectionRestriction(
+                detail: "The target is an Apple platform binary. SIP and runtime protections are expected to reject DYLD_INSERT_LIBRARIES."
+            )
+        }
+        let usesHardenedRuntime = targetSigningMetadata.flags & hardenedRuntimeFlag != 0
+        if usesHardenedRuntime && !targetSigningMetadata.allowsDYLDEnvironmentVariables {
+            return InjectionRestriction(
+                detail: "The target enables Hardened Runtime without the Allow DYLD Environment Variables entitlement. macOS is expected to reject DYLD_INSERT_LIBRARIES."
+            )
+        }
+        let requiresLibraryValidation = usesHardenedRuntime
+            || targetSigningMetadata.flags & libraryValidationFlag != 0
+        let tracerHasMatchingTeam = targetSigningMetadata.teamIdentifier != nil
+            && targetSigningMetadata.teamIdentifier == tracerSigningMetadata?.teamIdentifier
+        if requiresLibraryValidation
+            && !targetSigningMetadata.disablesLibraryValidation
+            && !tracerHasMatchingTeam {
+            return InjectionRestriction(
+                detail: "The target enforces library validation for a differently signed tracer. macOS is expected to reject XPCTrace unless the target disables library validation."
+            )
+        }
+        return nil
     }
 
     private static func resolveExecutable(
@@ -187,7 +240,7 @@ enum TargetPreflightService {
         deepCaptureEnabled: Bool,
         hasCompatibleArchitecture: Bool,
         hasReadableTracerSlice: Bool,
-        isProtected: Bool
+        injectionRestriction: InjectionRestriction?
     ) -> TargetPreflight.Check {
         guard deepCaptureEnabled else {
             return TargetPreflight.Check(
@@ -225,12 +278,13 @@ enum TargetPreflightService {
                 blocksLaunch: false
             )
         }
-        if isProtected {
+        if let injectionRestriction {
             return TargetPreflight.Check(
                 id: "injection",
                 title: "Injected XPC payload capture",
                 level: .limited,
-                detail: "This protected target is expected to reject DYLD_INSERT_LIBRARIES. Resource snapshots and supported telemetry may still be available.",
+                detail: injectionRestriction.detail
+                    + " Launch will continue without dylib injection; resource snapshots and supported telemetry may still be available.",
                 blocksLaunch: false
             )
         }
@@ -243,16 +297,52 @@ enum TargetPreflightService {
         )
     }
 
-    private static func protectedTargetCheck(isProtected: Bool) -> TargetPreflight.Check {
+    private static func protectedTargetCheck(
+        injectionRestriction: InjectionRestriction?
+    ) -> TargetPreflight.Check {
         TargetPreflight.Check(
             id: "protected-target",
-            title: "Protected target restrictions",
-            level: isProtected ? .limited : .available,
-            detail: isProtected
-                ? "The target is protected by its location or code signature. SIP and runtime protections can leave deep-inspection blind spots."
-                : "The target does not appear to be an Apple platform binary or a protected system path.",
+            title: "Target runtime restrictions",
+            level: injectionRestriction == nil ? .available : .limited,
+            detail: injectionRestriction?.detail
+                ?? "The target does not expose a known launch-time injection restriction.",
             blocksLaunch: false
         )
+    }
+
+    private static func signingMetadata(at url: URL) -> SigningMetadata? {
+        var staticCode: SecStaticCode?
+        guard
+            SecStaticCodeCreateWithPath(url as CFURL, [], &staticCode) == errSecSuccess,
+            let staticCode
+        else {
+            return nil
+        }
+        var information: CFDictionary?
+        guard
+            SecCodeCopySigningInformation(staticCode, [], &information) == errSecSuccess,
+            let values = information as? [String: Any]
+        else {
+            return nil
+        }
+        let entitlements = values[kSecCodeInfoEntitlementsDict as String] as? [String: Any] ?? [:]
+        return SigningMetadata(
+            flags: (values[kSecCodeInfoFlags as String] as? NSNumber)?.uint32Value ?? 0,
+            teamIdentifier: values[kSecCodeInfoTeamIdentifier as String] as? String,
+            allowsDYLDEnvironmentVariables: boolEntitlement(
+                "com.apple.security.cs.allow-dyld-environment-variables",
+                in: entitlements
+            ),
+            disablesLibraryValidation: boolEntitlement(
+                "com.apple.security.cs.disable-library-validation",
+                in: entitlements
+            ),
+            isPlatformBinary: values[kSecCodeInfoPlatformIdentifier as String] != nil
+        )
+    }
+
+    private static func boolEntitlement(_ key: String, in entitlements: [String: Any]) -> Bool {
+        (entitlements[key] as? NSNumber)?.boolValue == true
     }
 
     private static func architectures(at url: URL) -> [String] {

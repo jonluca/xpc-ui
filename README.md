@@ -95,7 +95,9 @@ lipo -info .derived-universal/Build/Products/Release/XPCTrace.dylib
 
 ## Lab limits
 
-SIP-enabled and platform-protected targets still reject some injection, Mach
-inspection, and DTrace probes. Endpoint Security telemetry cannot activate
-without Apple's restricted entitlement. The app reports these blind spots
-instead of implying complete coverage.
+SIP-enabled, platform-protected, and hardened-runtime targets still reject some
+injection, Mach inspection, and DTrace probes. Launch preflight checks the
+target's DYLD-environment and library-validation signature policy before
+requesting injection. Endpoint Security telemetry cannot activate without
+Apple's restricted entitlement. The app reports these blind spots instead of
+implying complete coverage.

@@ -85,4 +85,63 @@ final class TargetPreflightServiceTests: XCTestCase {
         XCTAssertEqual(check.level, .limited)
         XCTAssertTrue(check.detail.contains("reduced visibility"))
     }
+
+    func testHardenedRuntimeWithoutDYLDExceptionRejectsInjection() {
+        let restriction = TargetPreflightService.injectionRestriction(
+            path: "/Applications/Fixture.app/Contents/MacOS/Fixture",
+            targetSigningMetadata: signingMetadata(
+                flags: TargetPreflightService.hardenedRuntimeFlag,
+                teamIdentifier: "TARGET"
+            ),
+            tracerSigningMetadata: signingMetadata(teamIdentifier: "TRACER")
+        )
+
+        XCTAssertNotNil(restriction)
+        XCTAssertTrue(restriction?.detail.contains("Allow DYLD Environment Variables") == true)
+    }
+
+    func testHardenedRuntimeWithOptOutEntitlementsAllowsDifferentlySignedTracer() {
+        let restriction = TargetPreflightService.injectionRestriction(
+            path: "/Applications/Fixture.app/Contents/MacOS/Fixture",
+            targetSigningMetadata: signingMetadata(
+                flags: TargetPreflightService.hardenedRuntimeFlag,
+                teamIdentifier: "TARGET",
+                allowsDYLDEnvironmentVariables: true,
+                disablesLibraryValidation: true
+            ),
+            tracerSigningMetadata: signingMetadata(teamIdentifier: "TRACER")
+        )
+
+        XCTAssertNil(restriction)
+    }
+
+    func testMatchingTeamTracerSatisfiesLibraryValidation() {
+        let restriction = TargetPreflightService.injectionRestriction(
+            path: "/Applications/Fixture.app/Contents/MacOS/Fixture",
+            targetSigningMetadata: signingMetadata(
+                flags: TargetPreflightService.hardenedRuntimeFlag,
+                teamIdentifier: "TEAM",
+                allowsDYLDEnvironmentVariables: true
+            ),
+            tracerSigningMetadata: signingMetadata(teamIdentifier: "TEAM")
+        )
+
+        XCTAssertNil(restriction)
+    }
+
+    private func signingMetadata(
+        flags: UInt32 = 0,
+        teamIdentifier: String? = nil,
+        allowsDYLDEnvironmentVariables: Bool = false,
+        disablesLibraryValidation: Bool = false,
+        isPlatformBinary: Bool = false
+    ) -> TargetPreflightService.SigningMetadata {
+        TargetPreflightService.SigningMetadata(
+            flags: flags,
+            teamIdentifier: teamIdentifier,
+            allowsDYLDEnvironmentVariables: allowsDYLDEnvironmentVariables,
+            disablesLibraryValidation: disablesLibraryValidation,
+            isPlatformBinary: isPlatformBinary
+        )
+    }
 }
