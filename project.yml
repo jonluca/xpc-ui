@@ -49,6 +49,7 @@ targets:
         CFBundlePackageType: SYSX
         NSEndpointSecurityEarlyBoot: false
         NSEndpointSecurityMachServiceName: com.jonluca.xpcui.endpoint-security
+        NSSystemExtensionUsageDescription: XPC UI uses this Endpoint Security system extension to capture supported process, file, socket, and named XPC connection telemetry for inspected targets.
   XPCUI:
     type: application
     platform: macOS
@@ -68,6 +69,7 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.jonluca.xpcui
         PRODUCT_NAME: XPC UI
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         CODE_SIGN_ENTITLEMENTS: Sources/XPCUI/XPCUI.entitlements
         INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.developer-tools
         SWIFT_OBJC_BRIDGING_HEADER: Sources/NativeSnapshot/NativeSnapshot.h

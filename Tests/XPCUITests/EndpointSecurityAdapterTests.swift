@@ -12,12 +12,12 @@ final class EndpointSecurityAdapterTests: XCTestCase {
         let info = try String(
             contentsOf: repositoryRoot.appendingPathComponent("Sources/EndpointSecurityExtension/Info.plist")
         )
-
         XCTAssertTrue(project.contains("  EndpointSecurityExtension:\n    type: system-extension"))
         XCTAssertTrue(project.contains("      - target: EndpointSecurityExtension\n        embed: true"))
         XCTAssertTrue(entitlements.contains("com.apple.developer.endpoint-security.client"))
         XCTAssertTrue(info.contains("NSEndpointSecurityMachServiceName"))
         XCTAssertTrue(info.contains("com.jonluca.xpcui.endpoint-security"))
+        XCTAssertTrue(info.contains("NSSystemExtensionUsageDescription"))
     }
 
     func testExtensionRoutesSupportedNotificationsThroughSharedEnvelopeStream() throws {

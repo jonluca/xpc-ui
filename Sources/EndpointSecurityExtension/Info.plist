@@ -22,5 +22,7 @@
 	<false/>
 	<key>NSEndpointSecurityMachServiceName</key>
 	<string>com.jonluca.xpcui.endpoint-security</string>
+	<key>NSSystemExtensionUsageDescription</key>
+	<string>XPC UI uses this Endpoint Security system extension to capture supported process, file, socket, and named XPC connection telemetry for inspected targets.</string>
 </dict>
 </plist>
